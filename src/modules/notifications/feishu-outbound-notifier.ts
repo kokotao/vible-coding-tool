@@ -35,11 +35,13 @@ type NotifyTextInput = {
 type FeishuOutboundNotifierOptions = {
   timeoutMs?: number;
   openBaseUrl?: string;
+  fetchImpl?: typeof fetch;
 };
 
 export class FeishuOutboundNotifier {
   private readonly timeoutMs: number;
   private readonly openBaseUrl: string;
+  private readonly fetchImpl: typeof fetch;
   private tenantTokenCache:
     | {
         token: string;
@@ -50,6 +52,7 @@ export class FeishuOutboundNotifier {
   constructor(private readonly connectorConfigService: ConnectorConfigService, options: FeishuOutboundNotifierOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? 6000;
     this.openBaseUrl = (options.openBaseUrl ?? "https://open.feishu.cn").replace(/\/+$/, "");
+    this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
   async notifyTaskStatus(input: NotifyTaskStatusInput): Promise<FeishuNotifyResult> {
@@ -113,7 +116,7 @@ export class FeishuOutboundNotifier {
     }, this.timeoutMs);
 
     try {
-      const response = await fetch(webhookUrl, {
+      const response = await this.fetchImpl(webhookUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -185,7 +188,7 @@ export class FeishuOutboundNotifier {
     }, this.timeoutMs);
 
     try {
-      const response = await fetch(`${this.openBaseUrl}/open-apis/im/v1/messages?receive_id_type=open_id`, {
+      const response = await this.fetchImpl(`${this.openBaseUrl}/open-apis/im/v1/messages?receive_id_type=open_id`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -237,7 +240,7 @@ export class FeishuOutboundNotifier {
     }, this.timeoutMs);
 
     try {
-      const response = await fetch(`${this.openBaseUrl}/open-apis/auth/v3/tenant_access_token/internal`, {
+      const response = await this.fetchImpl(`${this.openBaseUrl}/open-apis/auth/v3/tenant_access_token/internal`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -466,7 +469,7 @@ export class FeishuOutboundNotifier {
       `触发方：${input.actorId}`
     ];
 
-    const threadSelector = this.buildThreadSelector(input.threadRef, input.threadAlias, input.taskTitle);
+    const threadSelector = this.buildThreadSelector(input.threadRef);
     if (threadSelector) {
       lines.push(`线程 ID：${threadSelector}`);
     }
@@ -476,11 +479,7 @@ export class FeishuOutboundNotifier {
 
   private ensureThreadLine(rendered: string, input: NotifyTaskStatusInput) {
     const text = (rendered || "").trim();
-    const selector = this.buildThreadSelector(
-      (input.threadRef || "").trim(),
-      (input.threadAlias || "").trim(),
-      this.resolveTaskTitle(input)
-    );
+    const selector = this.buildThreadSelector((input.threadRef || "").trim());
 
     if (!selector) {
       return text;
@@ -493,15 +492,13 @@ export class FeishuOutboundNotifier {
     return `${text}\n线程 ID：${selector}`.trim();
   }
 
-  private buildThreadSelector(threadRef: string, threadAlias: string, threadName: string) {
+  private buildThreadSelector(threadRef: string) {
     const normalizedThreadRef = threadRef.trim();
     if (!normalizedThreadRef) {
       return "";
     }
 
-    const shortId = normalizedThreadRef.slice(0, 8);
-    const compactName = this.limitText((threadName || "").trim() || "当前线程", 30);
-    return `${shortId}-${compactName} (${normalizedThreadRef})`;
+    return normalizedThreadRef;
   }
 
   private limitText(value: string, maxLength: number) {

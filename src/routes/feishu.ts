@@ -103,13 +103,20 @@ export function registerFeishuRoutes(
   encryptKey: string | undefined
 ) {
   app.post<{ Body: FeishuWebhookBody }>("/api/feishu/webhook", async (request) => {
-    verifyFeishuEventSignature(
-      encryptKey,
-      request.headers as Record<string, unknown>,
-      request.body
-    );
-
     const payload = decryptFeishuPayloadIfNeeded(request.body, encryptKey) as FeishuWebhookBody;
+
+    if (payload.challenge || payload.type === "url_verification") {
+      verifyFeishuToken(
+        verifyToken,
+        request.headers["x-lark-request-token"] as string | undefined,
+        payload.token
+      );
+      return {
+        challenge: payload.challenge
+      };
+    }
+
+    verifyFeishuEventSignature(encryptKey, request.headers as Record<string, unknown>, request.body);
     const normalized = normalizeFeishuEvent(payload);
 
     verifyFeishuToken(
@@ -117,12 +124,6 @@ export function registerFeishuRoutes(
       request.headers["x-lark-request-token"] as string | undefined,
       normalized.token
     );
-
-    if (payload.challenge || payload.type === "url_verification") {
-      return {
-        challenge: payload.challenge
-      };
-    }
 
     const event = normalized.event;
     if (!event || normalized.eventType !== "im.message.receive_v1") {

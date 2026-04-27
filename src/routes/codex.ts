@@ -43,6 +43,21 @@ const codexTaskEventsQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).optional()
 });
 
+const codexLocalSessionsQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(10000).optional(),
+  refresh: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => (value ? value === "true" : false))
+});
+
+const codexLocalSessionDetailQuerySchema = z.object({
+  refresh: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => (value ? value === "true" : false))
+});
+
 function parseStatuses(value: string | undefined) {
   if (!value) {
     return [];
@@ -192,6 +207,25 @@ export function registerCodexRoutes(
       return codexQueryService.getTaskEvents({
         taskId: request.params.taskId,
         limit: query.limit ?? 100
+      });
+    }
+  );
+
+  app.get<{ Querystring: { limit?: string; refresh?: string } }>("/api/codex/local-sessions", async (request) => {
+    const query = codexLocalSessionsQuerySchema.parse(request.query);
+    return codexQueryService.listLocalSessions({
+      limit: query.limit ?? 1000,
+      refresh: query.refresh
+    });
+  });
+
+  app.get<{ Params: { threadId: string }; Querystring: { refresh?: string } }>(
+    "/api/codex/local-sessions/:threadId",
+    async (request) => {
+      const query = codexLocalSessionDetailQuerySchema.parse(request.query);
+      return codexQueryService.getLocalSessionDetail({
+        threadId: request.params.threadId,
+        refresh: query.refresh
       });
     }
   );

@@ -1,12 +1,78 @@
 import { createHash } from "node:crypto";
-import { createServer } from "node:http";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildApp } from "../../src/app";
 import { createSqliteDatabase, migrateDatabase } from "../../src/storage/sqlite";
+import { createFetchMock } from "../helpers/fetch-mock";
 
 function buildFeishuSignature(payload: unknown, timestamp: string, nonce: string, encryptKey: string) {
   return createHash("sha256")
     .update(timestamp + nonce + encryptKey + JSON.stringify(payload))
     .digest("hex");
+}
+
+function createFeishuOpenApiMock(options: { userNames?: Record<string, string | null | undefined> } = {}) {
+  const messageBodies: string[] = [];
+  const { fetchImpl } = createFetchMock([
+    {
+      match: /\/open-apis\/auth\/v3\/tenant_access_token\/internal$/,
+      response: () =>
+        new Response(
+          JSON.stringify({
+            code: 0,
+            tenant_access_token: "token-demo",
+            expire: 7200
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        )
+    },
+    {
+      match: /\/open-apis\/contact\/v3\/users\/([^/?]+)\?user_id_type=open_id$/,
+      response: ({ url }) => {
+        const matched = url.match(/\/users\/([^/?]+)\?user_id_type=open_id$/);
+        const openId = matched ? decodeURIComponent(matched[1]) : "";
+        const displayName = options.userNames?.[openId] ?? null;
+
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            data: {
+              user: displayName ? { name: displayName } : {}
+            }
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
+    },
+    {
+      match: /\/open-apis\/im\/v1\/messages/,
+      response: ({ bodyText }) => {
+        messageBodies.push(bodyText);
+        return new Response(JSON.stringify({ code: 0 }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        });
+      }
+    }
+  ]);
+
+  return {
+    fetchImpl,
+    messageBodies
+  };
 }
 
 describe("feishu webhook api", () => {
@@ -37,6 +103,36 @@ describe("feishu webhook api", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       challenge: "challenge-abc"
+    });
+
+    await app.close();
+  });
+
+  it("returns challenge response before signature validation when encrypt key is configured", async () => {
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuEncryptKey: "encrypt-key-demo"
+      }
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/feishu/webhook",
+      payload: {
+        challenge: "challenge-plain-abc",
+        type: "url_verification"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      challenge: "challenge-plain-abc"
     });
 
     await app.close();
@@ -100,128 +196,501 @@ describe("feishu webhook api", () => {
     await app.close();
   });
 
-  it("pushes outbound status to feishu open api when connector is enabled", async () => {
-    const messageBodies: string[] = [];
-    const mockOpenApiServer = createServer((request, response) => {
-      let raw = "";
-      request.on("data", (chunk) => {
-        raw += String(chunk);
-      });
-      request.on("end", () => {
-        if (request.url === "/open-apis/auth/v3/tenant_access_token/internal") {
-          response.statusCode = 200;
-          response.setHeader("content-type", "application/json");
-          response.end("{\"code\":0,\"tenant_access_token\":\"token-demo\",\"expire\":7200}");
-          return;
-        }
-
-        if (request.url?.startsWith("/open-apis/im/v1/messages")) {
-          messageBodies.push(raw);
-          response.statusCode = 200;
-          response.setHeader("content-type", "application/json");
-          response.end("{\"code\":0}");
-          return;
-        }
-
-        response.statusCode = 404;
-        response.end();
-      });
+  it("auto-resolves sender identity on first inbound message and stores display label", async () => {
+    const mockOpenApi = createFeishuOpenApiMock({
+      userNames: {
+        ou_auto_user: "自动识别姓名"
+      }
     });
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
 
-    await new Promise<void>((resolve) => {
-      mockOpenApiServer.listen(0, "127.0.0.1", resolve);
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
     });
 
     try {
-      const address = mockOpenApiServer.address();
-      if (!address || typeof address === "string") {
-        throw new Error("Mock open api server address is invalid");
-      }
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
 
-      const db = createSqliteDatabase(":memory:");
-      migrateDatabase(db);
-      const openBaseUrl = `http://127.0.0.1:${address.port}`;
-
-      const app = buildApp({
-        db,
-        env: {
-          databasePath: ":memory:",
-          logLevel: "silent",
-          feishuVerifyToken: "verify-token",
-          feishuOpenBaseUrl: openBaseUrl
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
         }
       });
 
-      try {
-        const current = await app.inject({
-          method: "GET",
-          url: "/api/connectors/feishu/config"
-        });
-        const currentConfig = current.json() as Record<string, unknown>;
-
-        await app.inject({
-          method: "PUT",
-          url: "/api/connectors/feishu/config",
-          payload: {
-            ...currentConfig,
-            enabled: true,
-            appId: "app-id",
-            appSecret: "app-secret",
-            callbackUrl: ""
-          }
-        });
-
-        const response = await app.inject({
-          method: "POST",
-          url: "/api/feishu/webhook",
-          headers: {
-            "x-lark-request-token": "verify-token"
-          },
-          payload: {
-            event: {
-              type: "im.message.receive_v1",
-              message: {
-                message_id: "msg-out-001",
-                message_type: "text",
-                content: "{\"text\":\"#session:feishu-codex-outbound 查询状态\"}"
-              },
-              sender: {
-                sender_id: {
-                  open_id: "ou_outbound"
-                }
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-auto-name",
+              message_type: "text",
+              content: "{\"text\":\"#session:feishu-auto-name 继续执行\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_auto_user"
               }
             }
           }
-        });
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json().notify).toMatchObject({
-          sent: true,
-          skipped: false,
-          statusCode: 200
-        });
-        expect(messageBodies).toHaveLength(1);
-
-        const payload = JSON.parse(messageBodies[0]) as {
-          receive_id: string;
-          msg_type: string;
-          content: string;
-        };
-        expect(payload.receive_id).toBe("ou_outbound");
-        expect(payload.msg_type).toBe("text");
-      } finally {
-        await app.close();
-      }
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        mockOpenApiServer.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
+        }
       });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          senderIdentity: {
+            openId: "ou_auto_user",
+            displayName: "自动识别姓名",
+            bindingSource: "auto",
+            boundBy: null
+          }
+        })
+      );
+
+      const recent = await app.inject({
+        method: "GET",
+        url: "/api/feishu/open-ids/recent?limit=10"
+      });
+      const payload = recent.json() as {
+        items: Array<{
+          openId: string;
+          displayName: string | null;
+          displayLabel: string;
+          bindingSource: string | null;
+        }>;
+      };
+      const item = payload.items.find((record) => record.openId === "ou_auto_user");
+
+      expect(item).toMatchObject({
+        openId: "ou_auto_user",
+        displayName: "自动识别姓名",
+        displayLabel: "自动识别姓名 (ou_auto_user)",
+        bindingSource: "auto"
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("manual binding overrides auto identity resolution", async () => {
+    const mockOpenApi = createFeishuOpenApiMock({
+      userNames: {
+        ou_override_user: "自动姓名"
+      }
+    });
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const autoResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-override-auto",
+              message_type: "text",
+              content: "{\"text\":\"#session:feishu-override-auto 自动识别一下\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_override_user"
+              }
+            }
+          }
+        }
+      });
+      expect(autoResponse.statusCode).toBe(200);
+      expect(autoResponse.json()).toEqual(
+        expect.objectContaining({
+          senderIdentity: expect.objectContaining({
+            displayName: "自动姓名",
+            bindingSource: "auto"
+          })
+        })
+      );
+
+      const bindResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-override-manual",
+              message_type: "text",
+              content: "{\"text\":\"绑定姓名：手动覆盖\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_override_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(bindResponse.statusCode).toBe(200);
+      expect(bindResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          message: "已绑定姓名：手动覆盖",
+          identity: {
+            openId: "ou_override_user",
+            displayName: "手动覆盖",
+            bindingSource: "manual",
+            boundBy: "ou_override_user"
+          }
+        })
+      );
+
+      const recent = await app.inject({
+        method: "GET",
+        url: "/api/feishu/open-ids/recent?limit=10"
+      });
+      const payload = recent.json() as {
+        items: Array<{
+          openId: string;
+          displayName: string | null;
+          displayLabel: string;
+          bindingSource: string | null;
+        }>;
+      };
+      const item = payload.items.find((record) => record.openId === "ou_override_user");
+
+      expect(item).toMatchObject({
+        openId: "ou_override_user",
+        displayName: "手动覆盖",
+        displayLabel: "手动覆盖 (ou_override_user)",
+        bindingSource: "manual"
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("falls back to open_id when Feishu user profile name is unavailable", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-fallback-name",
+              message_type: "text",
+              content: "{\"text\":\"#session:feishu-fallback-name 继续执行\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_fallback_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          senderIdentity: null
+        })
+      );
+
+      const recent = await app.inject({
+        method: "GET",
+        url: "/api/feishu/open-ids/recent?limit=10"
+      });
+      const payload = recent.json() as {
+        items: Array<{
+          openId: string;
+          displayName: string | null;
+          displayLabel: string;
+          bindingSource: string | null;
+        }>;
+      };
+      const item = payload.items.find((record) => record.openId === "ou_fallback_user");
+
+      expect(item).toMatchObject({
+        openId: "ou_fallback_user",
+        displayName: null,
+        displayLabel: "ou_fallback_user",
+        bindingSource: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("pushes outbound status to feishu open api when connector is enabled", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    const openBaseUrl = "http://mock.feishu";
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: openBaseUrl
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-out-001",
+              message_type: "text",
+              content: "{\"text\":\"#session:feishu-codex-outbound 查询状态\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_outbound"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().notify).toMatchObject({
+        sent: true,
+        skipped: false,
+        statusCode: 200
+      });
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+
+      const payload = JSON.parse(mockOpenApi.messageBodies[0]) as {
+        receive_id: string;
+        msg_type: string;
+        content: string;
+      };
+      expect(payload.receive_id).toBe("ou_outbound");
+      expect(payload.msg_type).toBe("text");
+
+      const taskDetail = await app.inject({
+        method: "GET",
+        url: `/api/tasks/${encodeURIComponent(response.json().taskId as string)}/detail`
+      });
+      expect(taskDetail.statusCode).toBe(200);
+      expect(
+        (taskDetail.json() as { auditLogs: Array<{ action: string; result: string }> }).auditLogs.some(
+          (item) => item.action === "feishu_notify_status" && item.result === "success"
+        )
+      ).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("records notify failure in task audit logs when feishu open api is unreachable", async () => {
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://127.0.0.1:65535"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-failed-notify",
+              message_type: "text",
+              content: "{\"text\":\"#session:feishu-codex-notify-fail 继续下一步\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_notify_fail"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          notify: expect.objectContaining({
+            sent: false,
+            skipped: false,
+            reason: "auth_failed"
+          })
+        })
+      );
+
+      const taskId = (response.json() as { taskId: string }).taskId;
+      const taskDetail = await app.inject({
+        method: "GET",
+        url: `/api/tasks/${encodeURIComponent(taskId)}/detail`
+      });
+
+      expect(taskDetail.statusCode).toBe(200);
+      expect(
+        (taskDetail.json() as { auditLogs: Array<{ action: string; result: string }> }).auditLogs.some(
+          (item) => item.action === "feishu_notify_status" && item.result === "failed"
+        )
+      ).toBe(true);
+    } finally {
+      await app.close();
     }
   });
 
@@ -421,6 +890,94 @@ describe("feishu webhook api", () => {
     );
 
     await app.close();
+  });
+
+  it("routes by local rollout short thread prefix when DB thread mapping is absent", async () => {
+    const sessionsRoot = mkdtempSync(join(tmpdir(), "feishu-thread-prefix-"));
+    const dayPath = join(sessionsRoot, "2026", "04", "26");
+    mkdirSync(dayPath, { recursive: true });
+    const threadRef = "019dca59-78b8-7d10-88fd-b6f9b8a7c409";
+    writeFileSync(join(dayPath, `rollout-2026-04-26T23-12-34-${threadRef}.jsonl`), "{\"type\":\"turn_context\"}\n", "utf8");
+
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000
+      }
+    });
+
+    try {
+      const bindSessionResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-bind-local-prefix",
+              message_type: "text",
+              content: "{\"text\":\"#session:feishu-codex-demo-prefix 先绑定会话\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_thread_prefix_user"
+              }
+            }
+          }
+        }
+      });
+      expect(bindSessionResponse.statusCode).toBe(200);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-thread-prefix-route",
+              message_type: "text",
+              content: "{\"text\":\"线程 ID：019dca59-发布线程，任务内容：继续下一步\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_thread_prefix_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          sessionId: "feishu-codex-demo-prefix",
+          threadRef,
+          dispatch: expect.objectContaining({
+            skipped: true,
+            reason: "dispatch_disabled"
+          })
+        })
+      );
+    } finally {
+      await app.close();
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
   });
 
   it("rejects request when verify token mismatch", async () => {

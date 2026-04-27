@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS feishu_identity_bindings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  open_id TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  binding_source TEXT NOT NULL,
+  bound_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id TEXT NOT NULL UNIQUE,

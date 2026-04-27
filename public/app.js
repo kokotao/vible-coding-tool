@@ -1,10 +1,20 @@
 const appRoot = document.getElementById("app");
 const drawerRoot = document.getElementById("drawer-root");
 const toastRoot = document.getElementById("toast-root");
+let dashboardRefreshTimer = null;
+let dashboardRefreshInFlight = false;
 
 const state = {
   dashboard: null,
   codexOverview: null,
+  codexLocalSessions: null,
+  localSessionsPage: {
+    selectedProjectKey: null,
+    selectedDayKey: null,
+    selectedThreadId: null,
+    detail: null,
+    loadError: null
+  },
   connectorConfigs: {},
   drawer: {
     open: false,
@@ -62,6 +72,13 @@ function route() {
   const hash = location.hash || "#/";
   const codexTaskEventMatch = hash.match(/^#\/codex\/tasks\/([^/]+)\/events$/);
   if (codexTaskEventMatch) return { name: "codexTaskEvents", taskId: decodeURIComponent(codexTaskEventMatch[1]) };
+  const localSessionsMatch = hash.match(/^#\/local-sessions(?:\/([^/?#]+))?/);
+  if (localSessionsMatch) {
+    return {
+      name: "localSessions",
+      threadId: localSessionsMatch[1] ? decodeURIComponent(localSessionsMatch[1]) : null
+    };
+  }
   const taskMatch = hash.match(/^#\/tasks\/([^/]+)$/);
   if (taskMatch) return { name: "task", taskId: decodeURIComponent(taskMatch[1]) };
   const sessionMatch = hash.match(/^#\/sessions\/([^/]+)$/);
@@ -73,13 +90,51 @@ function navButton(label, hash) {
   return `<a class="button subtle small" href="${hash}">${label}</a>`;
 }
 
+function stopDashboardRefresh() {
+  if (!dashboardRefreshTimer) {
+    return;
+  }
+
+  clearInterval(dashboardRefreshTimer);
+  dashboardRefreshTimer = null;
+}
+
+function startDashboardRefresh() {
+  if (dashboardRefreshTimer) {
+    return;
+  }
+
+  dashboardRefreshTimer = window.setInterval(() => {
+    if (route().name !== "dashboard" || dashboardRefreshInFlight) {
+      return;
+    }
+
+    dashboardRefreshInFlight = true;
+    void loadDashboard()
+      .then(() => {
+        if (route().name === "dashboard") {
+          renderDashboardPage();
+          bindDashboardEvents();
+        }
+      })
+      .catch(() => {
+        // Keep the last rendered view if a refresh request briefly fails.
+      })
+      .finally(() => {
+        dashboardRefreshInFlight = false;
+      });
+  }, 10000);
+}
+
 async function loadDashboard() {
-  const [dashboard, codexOverview] = await Promise.all([
+  const [dashboard, codexOverview, codexLocalSessions] = await Promise.all([
     fetchJson("/api/dashboard/summary"),
-    loadCodexOverview()
+    loadCodexOverview(),
+    loadCodexLocalSessions()
   ]);
   state.dashboard = dashboard;
   state.codexOverview = codexOverview;
+  state.codexLocalSessions = codexLocalSessions;
 }
 
 async function loadCodexOverview() {
@@ -93,6 +148,56 @@ async function loadCodexOverview() {
       updatedAt: null,
       loadError: error.message || "Codex overview unavailable"
     };
+  }
+}
+
+async function loadCodexLocalSessions() {
+  try {
+    return await fetchJson("/api/codex/local-sessions?limit=500&refresh=true");
+  } catch (error) {
+    return {
+      groups: [],
+      totalFiles: 0,
+      totalThreads: 0,
+      scannedAt: null,
+      loadError: error.message || "Codex local sessions unavailable"
+    };
+  }
+}
+
+async function loadLocalSessionDetail(threadId) {
+  return await fetchJson(`/api/codex/local-sessions/${encodeURIComponent(threadId)}?refresh=true`);
+}
+
+async function loadLocalSessionsPage(threadId = null) {
+  state.codexLocalSessions = await loadCodexLocalSessions();
+  state.localSessionsPage.loadError = null;
+
+  const projects = groupLocalSessionItems(state.codexLocalSessions.items || []);
+  const selection = resolveLocalSessionSelection(projects, threadId || null);
+
+  state.localSessionsPage.selectedProjectKey = selection.project?.projectKey || null;
+  state.localSessionsPage.selectedDayKey = selection.day?.dayKey || null;
+  state.localSessionsPage.selectedThreadId = selection.session?.threadId || null;
+  state.localSessionsPage.detail = null;
+
+  if (state.localSessionsPage.selectedThreadId) {
+    await refreshLocalSessionDetail(state.localSessionsPage.selectedThreadId);
+  }
+}
+
+async function refreshLocalSessionDetail(threadId) {
+  if (!threadId) {
+    state.localSessionsPage.detail = null;
+    return;
+  }
+
+  try {
+    state.localSessionsPage.detail = await loadLocalSessionDetail(threadId);
+    state.localSessionsPage.loadError = null;
+  } catch (error) {
+    state.localSessionsPage.detail = null;
+    state.localSessionsPage.loadError = error.message || "Local session detail unavailable";
   }
 }
 
@@ -244,6 +349,31 @@ function renderDashboardPage() {
     `
     : `<div class="empty-state">Codex 总览暂不可用：${escapeHtml(codexOverview?.loadError || "unknown_error")}</div>`;
 
+  const codexLocalSessions = state.codexLocalSessions;
+  const localSessionProjects = groupLocalSessionItems(codexLocalSessions?.items || []);
+  const codexLocalSessionPreviewHtml =
+    localSessionProjects.length > 0
+      ? localSessionProjects.slice(0, 3).map(
+          (project) => `
+            <article class="session-row">
+              <div class="row">
+                <div>
+                  <div class="session-title">${escapeHtml(project.projectName)}</div>
+                  <div class="subtext">${escapeHtml(project.projectPath || "未知路径")}</div>
+                </div>
+                <span class="${statusClass("info")}">${escapeHtml(project.count)} 条</span>
+              </div>
+              <div class="session-meta">
+                ${project.days
+                  .slice(0, 3)
+                  .map((day) => `${escapeHtml(day.label)} (${escapeHtml(day.count)})`)
+                  .join("<br/>")}
+              </div>
+            </article>
+          `
+        ).join("")
+      : `<div class="empty-state">本地 Codex 会话暂无可展示数据：${escapeHtml(codexLocalSessions?.loadError || "empty")}</div>`;
+
   const risksHtml = dashboard.pendingRisks.length
     ? dashboard.pendingRisks
         .map(
@@ -303,7 +433,7 @@ function renderDashboardPage() {
   renderShell(
     "任务驾驶舱与连接中心",
     "机器人消息仍然是主交互面，这个页面负责把任务、会话、风控和连接状态集中展示出来，并承接少量补位操作。",
-    [navButton("首页总览", "#/"), navButton("健康检查", "/health")].join(""),
+    [navButton("首页总览", "#/"), navButton("本地会话页", "#/local-sessions"), navButton("健康检查", "/health")].join(""),
     `
       <section class="metrics">${metrics}</section>
       <section class="content-grid">
@@ -338,6 +468,18 @@ function renderDashboardPage() {
               </div>
             </div>
             <div class="session-list">${codexSessionsHtml}</div>
+            <div class="panel-head" style="margin-top:16px;">
+              <div>
+                <h2 style="font-size:18px;">本地会话目录</h2>
+              </div>
+              <button class="button small primary" data-open-local-sessions="true">打开目录页</button>
+            </div>
+            <div class="detail-list">
+              <div class="detail-row"><span class="subtext">线程数</span><strong>${escapeHtml(codexLocalSessions?.totalThreads ?? 0)}</strong></div>
+              <div class="detail-row"><span class="subtext">文件数</span><strong>${escapeHtml(codexLocalSessions?.totalFiles ?? 0)}</strong></div>
+              <div class="detail-row"><span class="subtext">扫描时间</span><strong>${escapeHtml(codexLocalSessions?.scannedAt || "-")}</strong></div>
+            </div>
+            <div class="session-list" style="margin-top: 14px;">${codexLocalSessionPreviewHtml}</div>
           </div>
           <div class="panel">
             <div class="panel-head">
@@ -369,6 +511,299 @@ function renderDashboardPage() {
             <div class="connector-list">${connectorsHtml}</div>
           </div>
         </div>
+      </section>
+    `
+  );
+}
+
+function groupLocalSessionItems(items) {
+  const projectMap = new Map();
+
+  for (const item of items) {
+    const projectKey = item.projectPath || item.projectName || "unknown-project";
+    let project = projectMap.get(projectKey);
+    if (!project) {
+      project = {
+        projectKey,
+        projectName: item.projectName || "unknown-project",
+        projectPath: item.projectPath || "",
+        sessions: [],
+        dayMap: new Map(),
+        latestAtMs: 0
+      };
+      projectMap.set(projectKey, project);
+    }
+
+    project.sessions.push(item);
+    const updatedAtMs = Date.parse(item.updatedAt) || 0;
+    project.latestAtMs = Math.max(project.latestAtMs, updatedAtMs);
+
+    const dayKey = `${item.year}-${item.month}-${item.day}`;
+    let day = project.dayMap.get(dayKey);
+    if (!day) {
+      day = {
+        dayKey,
+        label: `${item.year} 年 ${item.month} 月 ${item.day} 日`,
+        items: [],
+        latestAtMs: 0
+      };
+      project.dayMap.set(dayKey, day);
+    }
+
+    day.items.push(item);
+    day.latestAtMs = Math.max(day.latestAtMs, updatedAtMs);
+  }
+
+  return [...projectMap.values()]
+    .sort((a, b) => {
+      if (b.latestAtMs !== a.latestAtMs) {
+        return b.latestAtMs - a.latestAtMs;
+      }
+      return a.projectName.localeCompare(b.projectName);
+    })
+    .map((project) => {
+      const days = [...project.dayMap.values()]
+        .sort((a, b) => {
+          if (b.latestAtMs !== a.latestAtMs) {
+            return b.latestAtMs - a.latestAtMs;
+          }
+          return b.dayKey.localeCompare(a.dayKey);
+        })
+        .map((day) => ({
+          dayKey: day.dayKey,
+          label: day.label,
+          count: day.items.length,
+          items: day.items
+        }));
+
+      return {
+        projectKey: project.projectKey,
+        projectName: project.projectName,
+        projectPath: project.projectPath,
+        sessions: project.sessions,
+        days,
+        latestAtMs: project.latestAtMs,
+        count: project.sessions.length
+      };
+    });
+}
+
+function resolveLocalSessionSelection(projects, preferredThreadId = null) {
+  let project = null;
+  let day = null;
+  let session = null;
+
+  if (preferredThreadId) {
+    for (const projectItem of projects) {
+      const matchedSession = projectItem.sessions.find((item) => item.threadId === preferredThreadId);
+      if (!matchedSession) {
+        continue;
+      }
+
+      project = projectItem;
+      day = projectItem.days.find((dayItem) => dayItem.dayKey === `${matchedSession.year}-${matchedSession.month}-${matchedSession.day}`) || projectItem.days[0] || null;
+      session = matchedSession;
+      break;
+    }
+  }
+
+  if (!project && projects.length > 0) {
+    const currentProjectKey = state.localSessionsPage.selectedProjectKey;
+    project =
+      projects.find((item) => item.projectKey === currentProjectKey) ||
+      projects[0] ||
+      null;
+  }
+
+  if (project && !day) {
+    const currentDayKey = state.localSessionsPage.selectedDayKey;
+    day = project.days.find((item) => item.dayKey === currentDayKey) || project.days[0] || null;
+  }
+
+  if (project && day && !session) {
+    const currentThreadId = state.localSessionsPage.selectedThreadId;
+    session =
+      day.items.find((item) => item.threadId === currentThreadId) ||
+      day.items[0] ||
+      project.sessions[0] ||
+      null;
+  }
+
+  return {
+    project,
+    day,
+    session
+  };
+}
+
+function renderLocalSessionMessage(message) {
+  const body = escapeHtml(message.content).replaceAll("\n", "<br/>");
+  const roleLabel = message.role === "user" ? "用户" : message.role === "tool" ? "工具" : "助手";
+  const kindLabel =
+    message.kind === "tool_call" ? "工具调用" : message.kind === "tool_output" ? "工具返回" : roleLabel;
+
+  return `
+    <article class="local-message ${message.kind} ${message.role}">
+      <div class="local-message-meta">
+        <span class="local-message-role">${kindLabel}</span>
+        <span class="local-message-time">${escapeHtml(message.timestamp || "-")}</span>
+      </div>
+      ${message.name ? `<div class="local-message-name">${escapeHtml(message.name)}</div>` : ""}
+      <div class="local-message-body">${body}</div>
+    </article>
+  `;
+}
+
+function renderLocalSessionsPage() {
+  const snapshot = state.codexLocalSessions;
+  if (!snapshot) {
+    renderShell(
+      "本地会话目录",
+      "正在扫描本地 rollout 文件。",
+      [navButton("返回总览", "#/")].join(""),
+      `<div class="panel"><div class="empty-state">正在加载本地会话目录...</div></div>`
+    );
+    return;
+  }
+
+  const projects = groupLocalSessionItems(snapshot.items || []);
+  const selection = resolveLocalSessionSelection(projects, state.localSessionsPage.selectedThreadId);
+  const selectedProject = selection.project;
+  const selectedDay = selection.day;
+  const selectedSession = selection.session;
+
+  state.localSessionsPage.selectedProjectKey = selectedProject?.projectKey || null;
+  state.localSessionsPage.selectedDayKey = selectedDay?.dayKey || null;
+  state.localSessionsPage.selectedThreadId = selectedSession?.threadId || null;
+
+  const selectedDetail = state.localSessionsPage.detail;
+  const detail = selectedDetail && selectedSession && selectedDetail.threadId === selectedSession.threadId ? selectedDetail : null;
+
+  const metrics = [
+    renderMetricCard("项目数", projects.length),
+    renderMetricCard("会话数", snapshot.totalFiles),
+    renderMetricCard("线程数", snapshot.totalThreads),
+    renderMetricCard("扫描时间", snapshot.scannedAt || "-")
+  ].join("");
+
+  const projectTreeHtml = projects.length
+    ? projects
+        .map(
+          (project) => `
+            <article class="local-project-card ${project.projectKey === selectedProject?.projectKey ? "active" : ""}">
+              <button class="local-project-button" data-select-project="${escapeHtml(project.projectKey)}">
+                <div>
+                  <div class="local-project-title">${escapeHtml(project.projectName)}</div>
+                  <div class="subtext">${escapeHtml(project.projectPath || "未知路径")}</div>
+                </div>
+                <span class="local-project-count">${escapeHtml(project.count)}</span>
+              </button>
+              <div class="local-day-chip-list">
+                ${project.days
+                  .map(
+                    (day) => `
+                      <button class="local-day-chip ${day.dayKey === selectedDay?.dayKey && project.projectKey === selectedProject?.projectKey ? "active" : ""}" data-select-day="${escapeHtml(
+                      day.dayKey
+                    )}" data-project-key="${escapeHtml(project.projectKey)}">
+                        <span>${escapeHtml(day.label)}</span>
+                        <strong>${escapeHtml(day.count)}</strong>
+                      </button>
+                    `
+                  )
+                  .join("")}
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : `<div class="empty-state">没有扫描到本地 Codex 会话。</div>`;
+
+  const sessionListHtml = selectedDay?.items?.length
+    ? selectedDay.items
+        .map(
+          (item) => `
+            <a class="local-session-card ${item.threadId === selectedSession?.threadId ? "active" : ""}" href="#/local-sessions/${encodeURIComponent(
+              item.threadId
+            )}">
+              <div class="local-session-card-head">
+                <div>
+                  <div class="local-session-title">${escapeHtml(item.sessionTitle)}</div>
+                  <div class="subtext">${escapeHtml(item.projectName)} · ${escapeHtml(item.rolloutFileName)}</div>
+                </div>
+                <span class="status-pill">${escapeHtml(item.messageCount)} 条</span>
+              </div>
+              <div class="local-session-card-meta">
+                <span>${escapeHtml(item.year)}-${escapeHtml(item.month)}-${escapeHtml(item.day)}</span>
+                <span>${escapeHtml(item.updatedAt)}</span>
+              </div>
+            </a>
+          `
+        )
+        .join("")
+    : `<div class="empty-state">当前日期下没有可展示的会话。</div>`;
+
+  const detailHtml = detail
+    ? `
+      <div class="local-detail-card">
+        <div class="panel-head">
+          <div>
+            <h2>${escapeHtml(detail.sessionTitle)}</h2>
+            <p>${escapeHtml(detail.projectName)} · ${escapeHtml(detail.rolloutFileName)}</p>
+          </div>
+          <div class="local-detail-stats">
+            <span class="status-pill">${escapeHtml(detail.messageCount)} 条</span>
+            <span class="status-pill">${escapeHtml(detail.year)}-${escapeHtml(detail.month)}-${escapeHtml(detail.day)}</span>
+          </div>
+        </div>
+        <div class="detail-keygrid">
+          <div class="key-item"><div class="label">Project</div><div class="value">${escapeHtml(detail.projectName)}</div></div>
+          <div class="key-item"><div class="label">Path</div><div class="value">${escapeHtml(detail.projectPath || "-")}</div></div>
+          <div class="key-item"><div class="label">Thread</div><div class="value">${escapeHtml(detail.threadId)}</div></div>
+          <div class="key-item"><div class="label">Updated</div><div class="value">${escapeHtml(detail.updatedAt)}</div></div>
+        </div>
+        <div class="local-message-feed">
+          ${detail.messages.length ? detail.messages.map((message) => renderLocalSessionMessage(message)).join("") : `<div class="empty-state">没有解析到可展示的聊天内容。</div>`}
+        </div>
+      </div>
+    `
+    : state.localSessionsPage.loadError
+      ? `<div class="empty-state">会话详情加载失败：${escapeHtml(state.localSessionsPage.loadError)}</div>`
+      : `<div class="empty-state">选择一个会话后，这里会展示聊天气泡内容。</div>`;
+
+  renderShell(
+    "本地会话目录",
+    "按项目和日期聚合本地 Codex rollout 文件，左侧选项目和日期，中间选会话，右侧看聊天内容。",
+    [navButton("返回总览", "#/"), `<button class="button small primary" data-refresh-local-sessions="true">刷新目录</button>`].join(""),
+    `
+      <section class="metrics">${metrics}</section>
+      <section class="local-sessions-layout">
+        <aside class="panel local-sidebar">
+          <div class="panel-head">
+            <div>
+              <h2>项目与日期</h2>
+              <p>先按项目归类，再按日期筛选到具体会话。</p>
+            </div>
+          </div>
+          <div class="local-project-tree">${projectTreeHtml}</div>
+        </aside>
+        <section class="panel local-session-column">
+          <div class="panel-head">
+            <div>
+              <h2>${escapeHtml(selectedProject?.projectName || "会话列表")}</h2>
+              <p>${escapeHtml(selectedDay?.label || "请选择左侧日期")}</p>
+            </div>
+          </div>
+          <div class="local-session-list">${sessionListHtml}</div>
+        </section>
+        <section class="panel local-detail-column">
+          <div class="panel-head">
+            <div>
+              <h2>聊天内容</h2>
+              <p>只渲染真正的对话气泡和必要的工具调用。</p>
+            </div>
+          </div>
+          ${detailHtml}
+        </section>
       </section>
     `
   );
@@ -614,6 +1049,13 @@ async function renderRoute() {
     return;
   }
 
+  if (current.name === "localSessions") {
+    await loadLocalSessionsPage(current.threadId || null);
+    renderLocalSessionsPage();
+    bindLocalSessionsEvents();
+    return;
+  }
+
   if (current.name === "task") {
     const detail = await fetchJson(`/api/tasks/${encodeURIComponent(current.taskId)}/detail`);
     renderTaskDetailPage(detail);
@@ -655,6 +1097,12 @@ function bindDashboardEvents() {
     });
   });
 
+  appRoot.querySelectorAll("[data-open-local-sessions]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      location.hash = "#/local-sessions";
+    });
+  });
+
   appRoot.querySelectorAll("[data-confirm-risk]").forEach((button) => {
     button.addEventListener("click", async () => {
       const token = button.getAttribute("data-confirm-risk");
@@ -668,6 +1116,74 @@ function bindDashboardEvents() {
       const token = button.getAttribute("data-reject-risk");
       if (!token) return;
       await submitRiskDecision(token, "reject");
+    });
+  });
+}
+
+function bindLocalSessionsEvents() {
+  appRoot.querySelectorAll("[data-refresh-local-sessions]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await loadLocalSessionsPage(state.localSessionsPage.selectedThreadId);
+        renderLocalSessionsPage();
+        bindLocalSessionsEvents();
+        showToast("本地会话目录已刷新", "success");
+      } catch (error) {
+        showToast(error.message, "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  appRoot.querySelectorAll("[data-select-project]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const projectKey = button.getAttribute("data-select-project");
+      if (!projectKey || !state.codexLocalSessions) {
+        return;
+      }
+
+      const projects = groupLocalSessionItems(state.codexLocalSessions.items || []);
+      const selectedProject = projects.find((item) => item.projectKey === projectKey);
+      if (!selectedProject) {
+        return;
+      }
+
+      const selectedDay = selectedProject.days[0] || null;
+      const selectedSession = selectedDay?.items[0] || selectedProject.sessions[0] || null;
+      state.localSessionsPage.selectedProjectKey = selectedProject.projectKey;
+      state.localSessionsPage.selectedDayKey = selectedDay?.dayKey || null;
+      state.localSessionsPage.selectedThreadId = selectedSession?.threadId || null;
+      await refreshLocalSessionDetail(state.localSessionsPage.selectedThreadId);
+      renderLocalSessionsPage();
+      bindLocalSessionsEvents();
+    });
+  });
+
+  appRoot.querySelectorAll("[data-select-day]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const dayKey = button.getAttribute("data-select-day");
+      const projectKey = button.getAttribute("data-project-key");
+      if (!dayKey || !projectKey || !state.codexLocalSessions) {
+        return;
+      }
+
+      const projects = groupLocalSessionItems(state.codexLocalSessions.items || []);
+      const selectedProject = projects.find((item) => item.projectKey === projectKey);
+      const selectedDay = selectedProject?.days.find((item) => item.dayKey === dayKey) || null;
+      const selectedSession = selectedDay?.items[0] || null;
+
+      if (!selectedProject || !selectedDay || !selectedSession) {
+        return;
+      }
+
+      state.localSessionsPage.selectedProjectKey = selectedProject.projectKey;
+      state.localSessionsPage.selectedDayKey = selectedDay.dayKey;
+      state.localSessionsPage.selectedThreadId = selectedSession.threadId;
+      await refreshLocalSessionDetail(selectedSession.threadId);
+      renderLocalSessionsPage();
+      bindLocalSessionsEvents();
     });
   });
 }
@@ -826,6 +1342,36 @@ function renderDrawerTab(config, recentOpenIds) {
     `;
   }
 
+  if (state.drawer.activeTab === "binding") {
+    return `
+      <div class="field">
+        <label>手动绑定指令</label>
+        <div class="inline-note">
+          在飞书里直接对机器人发送 <strong>绑定姓名：张三</strong>，当前 open_id 会被写入映射并覆盖自动识别结果。
+        </div>
+      </div>
+      <div class="field">
+        <label>最近识别的身份</label>
+        <div class="detail-list">
+          ${
+            recentOpenIds.length
+              ? recentOpenIds
+                  .map(
+                    (item) => `
+                      <div class="detail-row">
+                        <span class="subtext">${escapeHtml(item.displayLabel || item.displayName || item.openId)}</span>
+                        <strong>${escapeHtml(item.bindingSource || "unbound")}</strong>
+                      </div>
+                    `
+                  )
+                  .join("")
+              : `<div class="empty-state">还没有可展示的 Feishu 身份记录。先从飞书发一条消息，系统会自动补齐姓名。</div>`
+          }
+        </div>
+      </div>
+    `;
+  }
+
   const quickMessagePanel =
     config.platform === "feishu"
       ? `
@@ -837,7 +1383,7 @@ function renderDrawerTab(config, recentOpenIds) {
                     .map(
                       (item) => `
                         <option value="${escapeHtml(item.openId)}">
-                          ${escapeHtml(item.openId)} · ${escapeHtml(item.sessionId)} · ${escapeHtml(item.lastSeenAt)}
+                          ${escapeHtml(item.displayLabel || item.displayName || item.openId)}
                         </option>
                       `
                     )
@@ -992,7 +1538,13 @@ async function testConnectorConfig() {
 async function boot() {
   try {
     await renderRoute();
+    if (route().name === "dashboard") {
+      startDashboardRefresh();
+    } else {
+      stopDashboardRefresh();
+    }
   } catch (error) {
+    stopDashboardRefresh();
     renderShell(
       "管理台加载失败",
       "后端接口已经启动，但当前页面没能正确拿到数据。",
@@ -1003,6 +1555,7 @@ async function boot() {
 }
 
 window.addEventListener("hashchange", () => {
+  stopDashboardRefresh();
   void boot();
 });
 

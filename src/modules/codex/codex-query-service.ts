@@ -10,6 +10,7 @@ import { AuditLogRepository } from "../../storage/repositories/audit-log-reposit
 import { MessageRepository } from "../../storage/repositories/message-repository";
 import { TaskRepository } from "../../storage/repositories/task-repository";
 import { ToolSessionRepository } from "../../storage/repositories/tool-session-repository";
+import { CodexLocalSessionService } from "./codex-local-session-service";
 
 export type CodexListQueryInput = {
   limit: number;
@@ -22,6 +23,7 @@ type CodexQueryServiceDeps = {
   taskRepository: TaskRepository;
   messageRepository: MessageRepository;
   auditLogRepository: AuditLogRepository;
+  codexLocalSessionService?: CodexLocalSessionService;
 };
 
 export class CodexQueryService {
@@ -105,6 +107,22 @@ export class CodexQueryService {
     return {
       items
     };
+  }
+
+  listLocalSessions(input: { limit: number; refresh: boolean }) {
+    if (!this.deps.codexLocalSessionService) {
+      throw new AppError("CODEX_LOCAL_SESSIONS_DISABLED", 503, "Local codex sessions scanner is disabled");
+    }
+
+    return this.deps.codexLocalSessionService.getSnapshot(input);
+  }
+
+  getLocalSessionDetail(input: { threadId: string; refresh: boolean }) {
+    if (!this.deps.codexLocalSessionService) {
+      throw new AppError("CODEX_LOCAL_SESSIONS_DISABLED", 503, "Local codex sessions scanner is disabled");
+    }
+
+    return this.deps.codexLocalSessionService.getSessionDetail(input);
   }
 
   getOverview(input: { taskLimit: number; sessionLimit: number; sinceHours?: number }) {

@@ -57,19 +57,36 @@ npm run codex:run -- --session feishu-codex-demo --title "修复登录接口" --
 示例：
 
 ```text
-线程 ID：019dca61-登录修复 (019dca61-0d90-7f01-b1b0-f1bb79eb955e)，任务内容：完成我所说的需求进行下一步
+线程 ID：019dca61-0d90-7f01-b1b0-f1bb79eb955e，任务内容：完成我所说的需求进行下一步
 ```
 
 说明：
 
 - 当前飞书对话会自动复用该发送人的最近会话，默认不需要重复带 `#session`
 - 首次对话若还未建立会话，可先发一次 `#session:<id> <任务>` 完成绑定
-- 网关会优先解析 `线程 ID` 字段中的完整 thread UUID；若只有简写前缀，会在当前会话内做唯一匹配
+- 网关会优先解析 `线程 ID` 字段中的完整 thread UUID；若只有简写前缀（例如 `019dca59-发布线程`），会在本机 `~/.codex/sessions` 扫描结果中做唯一匹配
+- 也支持直接粘贴 rollout 文件名：`线程 ID：rollout-2026-04-26T23-12-34-019dca59-78b8-7d10-88fd-b6f9b8a7c409.jsonl`
 - 高风险命令仍会进入确认流，确认后自动继续下发到 Codex 执行
+
+## 本地会话扫描与年月日分类展示
+
+网关会定时扫描本机 `~/.codex/sessions`，并按目录结构 `YYYY/MM/DD` 聚合展示 rollout 会话：
+
+- 接口：`GET /api/codex/local-sessions?limit=1000&refresh=false`
+- 返回：`items`（扁平列表） + `groups`（按年/月/日分组）
+- 每条会话包含：`threadId`、`rolloutFileName`、`rolloutPath`、`year/month/day`、`updatedAt`
+
+可选环境变量：
+
+- `CODEX_LOCAL_SESSIONS_SCAN_ENABLED=true|false`
+- `CODEX_LOCAL_SESSIONS_ROOT=~/.codex/sessions`
+- `CODEX_LOCAL_SESSIONS_SCAN_INTERVAL_MS=15000`
 
 ## Codex 全局自动回推（任何任务完成即上报）
 
-当你希望“当前这台机器上的 Codex 任意任务一完成就自动回推飞书”，启动全局 watcher：
+网关启动后会默认自动拉起全局 watcher，把当前这台机器上的 Codex 完成事件回推到飞书。
+
+如果你想单独手动启动 watcher，也可以直接运行：
 
 ```bash
 npm run codex:watch -- --session feishu-codex-demo --recipientOpenId <你的open_id>
@@ -81,12 +98,19 @@ npm run codex:watch -- --session feishu-codex-demo --recipientOpenId <你的open
 - 默认 `--bootstrap tail`，首次启动只跟踪后续新增事件，不会回放历史
 - `--session` 可指定统一回推会话（建议与你飞书里 `#session:<id>` 一致）
 - `--recipientOpenId` 会作为发送者标识上报，网关可自动识别并回推给该用户
+- 如果不传 `--recipientOpenId`，watcher 会先去网关读取 `/api/feishu/open-ids/recent` 的最新 open_id，再作为回推目标
 - 状态文件默认写入 `./data/codex-watcher-state.json`，用于断点续扫去重
 - 常用参数：
   - `--gateway http://127.0.0.1:3000`
   - `--pollMs 3000`
   - `--bootstrap tail|replay`
-  - `--scanArchived true|false`
+- `--scanArchived true|false`
+
+如果你不想让网关自动拉起 watcher，可以在环境变量里设：
+
+```bash
+CODEX_WATCH_AUTO_START=false
+```
 
 飞书模板支持占位符：
 

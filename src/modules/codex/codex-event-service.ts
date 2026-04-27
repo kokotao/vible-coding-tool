@@ -145,6 +145,16 @@ export class CodexEventService {
       threadAlias: threadBinding?.threadAlias ?? null,
       threadRef: resolvedThreadRef
     });
+    this.deps.auditLogRepository.create({
+      eventId: randomUUID(),
+      taskId: updatedTask.taskId,
+      sessionId: updatedTask.sessionId,
+      action: "codex_notify_status",
+      actorId: senderId,
+      result: this.normalizeNotifyResult(notify),
+      detail: `sent=${notify.sent}; skipped=${notify.skipped}; reason=${notify.reason || "null"}; statusCode=${notify.statusCode ?? "null"}; threadRef=${resolvedThreadRef || "null"}`,
+      createdAt: now
+    });
 
     return {
       accepted: true,
@@ -290,5 +300,17 @@ export class CodexEventService {
     }
 
     return this.deps.feishuNotifier.notifyTaskStatus(input);
+  }
+
+  private normalizeNotifyResult(notify: { sent: boolean; skipped: boolean }) {
+    if (notify.sent) {
+      return "success";
+    }
+
+    if (notify.skipped) {
+      return "skipped";
+    }
+
+    return "failed";
   }
 }

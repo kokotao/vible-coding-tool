@@ -1,9 +1,9 @@
-import { createServer } from "node:http";
 import { createHmac } from "node:crypto";
 import { buildApp } from "../../src/app";
 import { TaskRepository } from "../../src/storage/repositories/task-repository";
 import { ToolSessionRepository } from "../../src/storage/repositories/tool-session-repository";
 import { createSqliteDatabase, migrateDatabase } from "../../src/storage/sqlite";
+import { createFetchMock } from "../helpers/fetch-mock";
 
 function createSignedHeaders(secret: string, payload: unknown, timestamp: number, nonce: string) {
   const rawBody = JSON.stringify(payload);
@@ -15,181 +15,186 @@ function createSignedHeaders(secret: string, payload: unknown, timestamp: number
   };
 }
 
+function createFeishuOpenApiMock() {
+  const authBodies: string[] = [];
+  const messageBodies: string[] = [];
+  const { fetchImpl } = createFetchMock([
+    {
+      match: /\/open-apis\/auth\/v3\/tenant_access_token\/internal$/,
+      response: ({ bodyText }) => {
+        authBodies.push(bodyText);
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            tenant_access_token: "token-demo",
+            expire: 7200
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
+    },
+    {
+      match: /\/open-apis\/im\/v1\/messages/,
+      response: ({ bodyText }) => {
+        messageBodies.push(bodyText);
+        return new Response(JSON.stringify({ code: 0 }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        });
+      }
+    }
+  ]);
+
+  return {
+    authBodies,
+    fetchImpl,
+    messageBodies
+  };
+}
+
 describe("codex events api", () => {
   it("syncs task status and pushes notification to feishu", async () => {
-    const messageBodies: string[] = [];
-    const mockOpenApiServer = createServer((request, response) => {
-      let raw = "";
-      request.on("data", (chunk) => {
-        raw += String(chunk);
-      });
-      request.on("end", () => {
-        if (request.url === "/open-apis/auth/v3/tenant_access_token/internal") {
-          response.statusCode = 200;
-          response.setHeader("content-type", "application/json");
-          response.end("{\"code\":0,\"tenant_access_token\":\"token-demo\",\"expire\":7200}");
-          return;
-        }
+    const mockOpenApi = createFeishuOpenApiMock();
 
-        if (request.url?.startsWith("/open-apis/im/v1/messages")) {
-          messageBodies.push(raw);
-          response.statusCode = 200;
-          response.setHeader("content-type", "application/json");
-          response.end("{\"code\":0}");
-          return;
-        }
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    const sessions = new ToolSessionRepository(db);
+    const tasks = new TaskRepository(db);
+    const now = new Date("2026-04-26T10:20:00.000Z").toISOString();
 
-        response.statusCode = 404;
-        response.end();
-      });
+    sessions.create({
+      sessionId: "codex-session-001",
+      toolProvider: "codex",
+      toolSessionRef: "codex-runtime-001",
+      status: "running",
+      createdBy: "ou_target_user",
+      createdAt: now,
+      updatedAt: now
     });
 
-    await new Promise<void>((resolve) => {
-      mockOpenApiServer.listen(0, "127.0.0.1", resolve);
+    tasks.create({
+      taskId: "task-codex-001",
+      sessionId: "codex-session-001",
+      triggerMessageId: null,
+      taskType: "command",
+      status: "running",
+      summary: "initial summary",
+      startedAt: now,
+      finishedAt: null
+    });
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
     });
 
     try {
-      const address = mockOpenApiServer.address();
-      if (!address || typeof address === "string") {
-        throw new Error("Mock open api server address is invalid");
-      }
-
-      const db = createSqliteDatabase(":memory:");
-      migrateDatabase(db);
-      const sessions = new ToolSessionRepository(db);
-      const tasks = new TaskRepository(db);
-      const now = new Date("2026-04-26T10:20:00.000Z").toISOString();
-
-      sessions.create({
-        sessionId: "codex-session-001",
-        toolProvider: "codex",
-        toolSessionRef: "codex-runtime-001",
-        status: "running",
-        createdBy: "ou_target_user",
-        createdAt: now,
-        updatedAt: now
+      const currentConfig = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
       });
 
-      tasks.create({
-        taskId: "task-codex-001",
-        sessionId: "codex-session-001",
-        triggerMessageId: null,
-        taskType: "command",
-        status: "running",
-        summary: "initial summary",
-        startedAt: now,
-        finishedAt: null
-      });
-
-      const app = buildApp({
-        db,
-        env: {
-          databasePath: ":memory:",
-          logLevel: "silent",
-          feishuOpenBaseUrl: `http://127.0.0.1:${address.port}`
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...(currentConfig.json() as Record<string, unknown>),
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: "",
+          templateTaskStarted: "任务开始",
+          templateTaskSucceeded: "任务成功",
+          templateTaskFailed: "任务失败",
+          templateTaskPendingConfirm: "请确认"
         }
       });
 
-      try {
-        const currentConfig = await app.inject({
-          method: "GET",
-          url: "/api/connectors/feishu/config"
-        });
-
-        await app.inject({
-          method: "PUT",
-          url: "/api/connectors/feishu/config",
-          payload: {
-            ...(currentConfig.json() as Record<string, unknown>),
-            enabled: true,
-            appId: "app-id",
-            appSecret: "app-secret",
-            callbackUrl: "",
-            templateTaskStarted: "任务开始",
-            templateTaskSucceeded: "任务成功",
-            templateTaskFailed: "任务失败",
-            templateTaskPendingConfirm: "请确认"
-          }
-        });
-
-        const response = await app.inject({
-          method: "POST",
-          url: "/api/codex/events",
-          payload: {
-            eventId: "codex-evt-001",
-            taskId: "task-codex-001",
-            sessionId: "codex-session-001",
-            status: "succeeded",
-            summary: "all checks passed",
-            senderId: "codex_runner"
-          }
-        });
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toMatchObject({
-          accepted: true,
-          duplicate: false,
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/codex/events",
+        payload: {
+          eventId: "codex-evt-001",
           taskId: "task-codex-001",
           sessionId: "codex-session-001",
           status: "succeeded",
-          notify: {
-            sent: true,
-            statusCode: 200
-          }
-        });
-
-        const taskDetail = await app.inject({
-          method: "GET",
-          url: "/api/tasks/task-codex-001/detail"
-        });
-
-        expect(taskDetail.statusCode).toBe(200);
-        expect(taskDetail.json().status).toBe("succeeded");
-        expect(taskDetail.json().summary).toBe("all checks passed");
-
-        const sessionDetail = await app.inject({
-          method: "GET",
-          url: "/api/sessions/codex-session-001/detail"
-        });
-        expect(sessionDetail.statusCode).toBe(200);
-        expect(sessionDetail.json().status).toBe("closed");
-
-        const duplicate = await app.inject({
-          method: "POST",
-          url: "/api/codex/events",
-          payload: {
-            eventId: "codex-evt-001",
-            taskId: "task-codex-001",
-            sessionId: "codex-session-001",
-            status: "succeeded",
-            summary: "all checks passed"
-          }
-        });
-
-        expect(duplicate.statusCode).toBe(200);
-        expect(duplicate.json()).toMatchObject({
-          accepted: true,
-          duplicate: true,
-          eventId: "codex-evt-001"
-        });
-        expect(messageBodies).toHaveLength(1);
-        expect(messageBodies[0]).toContain("任务成功");
-        expect(messageBodies[0]).toContain("任务标题");
-        expect(messageBodies[0]).toContain("完成内容");
-        expect(messageBodies[0]).toContain("all checks passed");
-      } finally {
-        await app.close();
-      }
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        mockOpenApiServer.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
+          summary: "all checks passed",
+          senderId: "codex_runner"
+        }
       });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        accepted: true,
+        duplicate: false,
+        taskId: "task-codex-001",
+        sessionId: "codex-session-001",
+        status: "succeeded",
+        notify: {
+          sent: true,
+          statusCode: 200
+        }
+      });
+
+      const taskDetail = await app.inject({
+        method: "GET",
+        url: "/api/tasks/task-codex-001/detail"
+      });
+
+      expect(taskDetail.statusCode).toBe(200);
+      expect(taskDetail.json().status).toBe("succeeded");
+      expect(taskDetail.json().summary).toBe("all checks passed");
+      expect(
+        taskDetail.json().auditLogs.some(
+          (item: { action: string; result: string }) =>
+            item.action === "codex_notify_status" && item.result === "success"
+        )
+      ).toBe(true);
+
+      const sessionDetail = await app.inject({
+        method: "GET",
+        url: "/api/sessions/codex-session-001/detail"
+      });
+      expect(sessionDetail.statusCode).toBe(200);
+      expect(sessionDetail.json().status).toBe("closed");
+
+      const duplicate = await app.inject({
+        method: "POST",
+        url: "/api/codex/events",
+        payload: {
+          eventId: "codex-evt-001",
+          taskId: "task-codex-001",
+          sessionId: "codex-session-001",
+          status: "succeeded",
+          summary: "all checks passed"
+        }
+      });
+
+      expect(duplicate.statusCode).toBe(200);
+      expect(duplicate.json()).toMatchObject({
+        accepted: true,
+        duplicate: true,
+        eventId: "codex-evt-001"
+      });
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+      expect(mockOpenApi.messageBodies[0]).toContain("任务成功");
+      expect(mockOpenApi.messageBodies[0]).toContain("任务标题");
+      expect(mockOpenApi.messageBodies[0]).toContain("完成内容");
+      expect(mockOpenApi.messageBodies[0]).toContain("all checks passed");
+    } finally {
+      await app.close();
     }
   });
 
@@ -321,117 +326,72 @@ describe("codex events api", () => {
   });
 
   it("uses sender open_id as recipient when session is created by codex event", async () => {
-    const messageBodies: string[] = [];
-    const mockOpenApiServer = createServer((request, response) => {
-      let raw = "";
-      request.on("data", (chunk) => {
-        raw += String(chunk);
-      });
-      request.on("end", () => {
-        if (request.url === "/open-apis/auth/v3/tenant_access_token/internal") {
-          response.statusCode = 200;
-          response.setHeader("content-type", "application/json");
-          response.end("{\"code\":0,\"tenant_access_token\":\"token-demo\",\"expire\":7200}");
-          return;
-        }
+    const mockOpenApi = createFeishuOpenApiMock();
 
-        if (request.url?.startsWith("/open-apis/im/v1/messages")) {
-          messageBodies.push(raw);
-          response.statusCode = 200;
-          response.setHeader("content-type", "application/json");
-          response.end("{\"code\":0}");
-          return;
-        }
-
-        response.statusCode = 404;
-        response.end();
-      });
-    });
-
-    await new Promise<void>((resolve) => {
-      mockOpenApiServer.listen(0, "127.0.0.1", resolve);
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
     });
 
     try {
-      const address = mockOpenApiServer.address();
-      if (!address || typeof address === "string") {
-        throw new Error("Mock open api server address is invalid");
-      }
+      const currentConfig = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
 
-      const db = createSqliteDatabase(":memory:");
-      migrateDatabase(db);
-      const app = buildApp({
-        db,
-        env: {
-          databasePath: ":memory:",
-          logLevel: "silent",
-          feishuOpenBaseUrl: `http://127.0.0.1:${address.port}`
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...(currentConfig.json() as Record<string, unknown>),
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
         }
       });
 
-      try {
-        const currentConfig = await app.inject({
-          method: "GET",
-          url: "/api/connectors/feishu/config"
-        });
-
-        await app.inject({
-          method: "PUT",
-          url: "/api/connectors/feishu/config",
-          payload: {
-            ...(currentConfig.json() as Record<string, unknown>),
-            enabled: true,
-            appId: "app-id",
-            appSecret: "app-secret",
-            callbackUrl: ""
-          }
-        });
-
-        const response = await app.inject({
-          method: "POST",
-          url: "/api/codex/events",
-          payload: {
-            eventId: "codex-openid-event-1",
-            taskId: "codex-openid-task-1",
-            sessionId: "codex-openid-session-1",
-            status: "succeeded",
-            summary: "open_id routing verification",
-            senderId: "ou_sender_for_notify"
-          }
-        });
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toMatchObject({
-          accepted: true,
-          duplicate: false,
-          notify: {
-            sent: true,
-            statusCode: 200
-          }
-        });
-
-        const session = await app.inject({
-          method: "GET",
-          url: "/api/sessions/codex-openid-session-1/detail"
-        });
-        expect(session.statusCode).toBe(200);
-        expect(session.json().createdBy).toBe("ou_sender_for_notify");
-
-        expect(messageBodies).toHaveLength(1);
-        expect(messageBodies[0]).toContain("\"receive_id\":\"ou_sender_for_notify\"");
-      } finally {
-        await app.close();
-      }
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        mockOpenApiServer.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/codex/events",
+        payload: {
+          eventId: "codex-openid-event-1",
+          taskId: "codex-openid-task-1",
+          sessionId: "codex-openid-session-1",
+          status: "succeeded",
+          summary: "open_id routing verification",
+          senderId: "ou_sender_for_notify"
+        }
       });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        accepted: true,
+        duplicate: false,
+        notify: {
+          sent: true,
+          statusCode: 200
+        }
+      });
+
+      const session = await app.inject({
+        method: "GET",
+        url: "/api/sessions/codex-openid-session-1/detail"
+      });
+      expect(session.statusCode).toBe(200);
+      expect(session.json().createdBy).toBe("ou_sender_for_notify");
+
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+      expect(mockOpenApi.messageBodies[0]).toContain("\"receive_id\":\"ou_sender_for_notify\"");
+    } finally {
+      await app.close();
     }
   });
 

@@ -16,10 +16,15 @@ export type ParsedCommand = {
   platformMessageId: string | null;
 };
 
+export type ParsedIdentityBindingCommand = {
+  displayName: string;
+};
+
 const SESSION_PATTERN = /#session:([a-zA-Z0-9_-]+)/;
 const THREAD_ID_PATTERN = /线程\s*ID[：:]\s*([^\n，,]+)/i;
 const THREAD_TAG_PATTERN = /#thread:([a-zA-Z0-9_-]+)/;
 const TASK_CONTENT_PATTERN = /任务内容[：:]\s*([\s\S]+)/;
+const IDENTITY_BIND_PATTERN = /^(?:#)?(?:绑定姓名|绑定名称|绑定昵称|姓名绑定|name)\s*[:：=]?\s*([\s\S]+)$/i;
 
 export function parseFeishuCommand(input: {
   text: string;
@@ -51,7 +56,8 @@ export function parseFeishuCommand(input: {
   }
 
   const threadAlias = null;
-  const threadSelector = (threadTagMatched?.[1] || threadIdMatched?.[1] || "").trim() || null;
+  const rawSelector = (threadTagMatched?.[1] || threadIdMatched?.[1] || "").trim();
+  const threadSelector = rawSelector.replace(/[；;。]+$/g, "").trim() || null;
 
   return {
     sessionId: sessionMatched?.[1] || null,
@@ -61,5 +67,23 @@ export function parseFeishuCommand(input: {
     sourcePlatform: "feishu",
     senderId: input.senderId,
     platformMessageId: input.messageId ?? null
+  };
+}
+
+export function parseFeishuIdentityBindingCommand(text: string): ParsedIdentityBindingCommand | null {
+  const rawText = (text || "").trim();
+  const matched = rawText.match(IDENTITY_BIND_PATTERN);
+
+  if (!matched) {
+    return null;
+  }
+
+  const displayName = (matched[1] || "").trim();
+  if (!displayName) {
+    return null;
+  }
+
+  return {
+    displayName
   };
 }

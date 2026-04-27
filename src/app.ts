@@ -10,8 +10,10 @@ import { ConnectorConfigService } from "./modules/connectors/connector-config-se
 import { ConnectorService } from "./modules/connectors/connector-service";
 import { CodexDispatchService } from "./modules/codex/codex-dispatch-service";
 import { CodexEventService } from "./modules/codex/codex-event-service";
+import { CodexLocalSessionService } from "./modules/codex/codex-local-session-service";
 import { CodexQueryService } from "./modules/codex/codex-query-service";
 import { DashboardService } from "./modules/dashboard/dashboard-service";
+import { FeishuIdentityService } from "./modules/feishu/feishu-identity-service";
 import { FeishuDirectoryService } from "./modules/feishu/feishu-directory-service";
 import { FeishuWebhookService } from "./modules/feishu/feishu-webhook-service";
 import { FeishuOutboundNotifier } from "./modules/notifications/feishu-outbound-notifier";
@@ -28,6 +30,7 @@ import { registerSessionRoutes } from "./routes/sessions";
 import { registerTaskRoutes } from "./routes/tasks";
 import { AuditLogRepository } from "./storage/repositories/audit-log-repository";
 import { ConnectorConfigRepository } from "./storage/repositories/connector-config-repository";
+import { FeishuIdentityRepository } from "./storage/repositories/feishu-identity-repository";
 import { IdempotencyRepository } from "./storage/repositories/idempotency-repository";
 import { MessageRepository } from "./storage/repositories/message-repository";
 import { RiskConfirmationRepository } from "./storage/repositories/risk-confirmation-repository";
@@ -39,6 +42,7 @@ import { createSqliteDatabase, migrateDatabase, type SqliteDatabase } from "./st
 export type BuildAppOptions = {
   env?: Partial<AppEnv>;
   db?: SqliteDatabase;
+  fetchImpl?: typeof fetch;
 };
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
@@ -52,14 +56,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const auditLogRepository = new AuditLogRepository(db);
   const idempotencyRepository = new IdempotencyRepository(db);
   const connectorConfigRepository = new ConnectorConfigRepository(db);
+  const feishuIdentityRepository = new FeishuIdentityRepository(db);
   const connectorConfigService = new ConnectorConfigService(connectorConfigRepository);
   const connectorService = new ConnectorService(connectorConfigService);
   const feishuNotifier = new FeishuOutboundNotifier(connectorConfigService, {
+    openBaseUrl: env.feishuOpenBaseUrl,
+    fetchImpl: options.fetchImpl
+  });
+  const codexLocalSessionService = env.codexLocalSessionsScanEnabled
+    ? new CodexLocalSessionService({
+        rootPath: env.codexLocalSessionsRoot,
+        scanIntervalMs: env.codexLocalSessionsScanIntervalMs
+      })
+    : null;
+  codexLocalSessionService?.start();
+  const feishuIdentityService = new FeishuIdentityService({
+    connectorConfigService,
+    identityRepository: feishuIdentityRepository,
+    fetchImpl: options.fetchImpl,
     openBaseUrl: env.feishuOpenBaseUrl
   });
   const feishuDirectoryService = new FeishuDirectoryService({
     messageRepository,
-    feishuNotifier
+    feishuNotifier,
+    feishuIdentityService
   });
   const codexEventService = new CodexEventService({
     taskRepository,
@@ -86,7 +106,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     toolSessionRepository,
     taskRepository,
     messageRepository,
-    auditLogRepository
+    auditLogRepository,
+    codexLocalSessionService: codexLocalSessionService ?? undefined
   });
   const lightOpsService = new LightOpsService({
     taskRepository,
@@ -163,10 +184,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       riskConfirmationRepository,
       toolSessionRepository,
       sessionThreadRepository,
+      auditLogRepository,
       connectorConfigService,
       idempotencyRepository,
       codexDispatchService,
-      feishuNotifier
+      feishuNotifier,
+      feishuIdentityService,
+      codexLocalSessionService: codexLocalSessionService ?? undefined
     }),
     feishuDirectoryService,
     env.feishuVerifyToken,
@@ -193,6 +217,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.addHook("onClose", async () => {
+    codexLocalSessionService?.stop();
     db.close();
   });
 

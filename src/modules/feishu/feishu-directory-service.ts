@@ -6,12 +6,14 @@
  */
 import { randomUUID } from "node:crypto";
 import { AppError } from "../../lib/errors";
+import { FeishuIdentityService } from "./feishu-identity-service";
 import { FeishuOutboundNotifier } from "../notifications/feishu-outbound-notifier";
 import { MessageRepository } from "../../storage/repositories/message-repository";
 
 type FeishuDirectoryServiceDeps = {
   messageRepository: MessageRepository;
   feishuNotifier: FeishuOutboundNotifier;
+  feishuIdentityService: FeishuIdentityService;
 };
 
 export class FeishuDirectoryService {
@@ -20,9 +22,62 @@ export class FeishuDirectoryService {
   getRecentOpenIds(limit = 20) {
     const normalizedLimit = Math.min(Math.max(limit, 1), 100);
     const items = this.deps.messageRepository.listRecentFeishuOpenIds(normalizedLimit);
+    const bindings = this.deps.feishuIdentityService.listRecentBindings(normalizedLimit);
+    const merged = new Map<
+      string,
+      {
+        openId: string;
+        sessionId: string;
+        lastSeenAt: string;
+        messageCount: number;
+        displayName: string | null;
+        displayLabel: string;
+        bindingSource: "auto" | "manual" | null;
+      }
+    >();
+
+    for (const item of items) {
+      const identity = this.deps.feishuIdentityService.getCachedIdentity(item.openId);
+      const displayName = identity?.displayName?.trim() || null;
+
+      merged.set(item.openId, {
+        openId: item.openId,
+        sessionId: item.sessionId,
+        lastSeenAt: item.lastSeenAt,
+        messageCount: item.messageCount,
+        displayName,
+        displayLabel: displayName ? `${displayName} (${item.openId})` : item.openId,
+        bindingSource: identity?.bindingSource ?? null
+      });
+    }
+
+    for (const binding of bindings) {
+      const existing = merged.get(binding.openId);
+      if (existing) {
+        existing.displayName = binding.displayName;
+        existing.displayLabel = `${binding.displayName} (${binding.openId})`;
+        existing.bindingSource = binding.bindingSource;
+        if (binding.updatedAt > existing.lastSeenAt) {
+          existing.lastSeenAt = binding.updatedAt;
+        }
+        continue;
+      }
+
+      merged.set(binding.openId, {
+        openId: binding.openId,
+        sessionId: `feishu-identity-${binding.openId}`,
+        lastSeenAt: binding.updatedAt,
+        messageCount: 0,
+        displayName: binding.displayName,
+        displayLabel: `${binding.displayName} (${binding.openId})`,
+        bindingSource: binding.bindingSource
+      });
+    }
 
     return {
-      items
+      items: [...merged.values()]
+        .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt))
+        .slice(0, normalizedLimit)
     };
   }
 

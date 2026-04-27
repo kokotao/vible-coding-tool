@@ -8,6 +8,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { resolveFeishuWatcherRecipientOpenId } from "../src/modules/feishu/feishu-open-id-resolver";
 
 type WatcherArgs = {
   gatewayUrl: string;
@@ -51,6 +52,11 @@ const HOME_DIR = process.env.HOME || "";
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   await assertGatewayReady(args.gatewayUrl);
+  const resolvedRecipientOpenId =
+    (await resolveFeishuWatcherRecipientOpenId({
+      gatewayUrl: args.gatewayUrl,
+      explicitRecipientOpenId: args.recipientOpenId
+    })) || args.senderId;
 
   const state = loadState(args.statePath);
   const partialBuffers = new Map<string, string>();
@@ -64,6 +70,9 @@ async function main() {
       args.sessionId || "<thread-id>"
     }`
   );
+  if (!args.recipientOpenId && resolvedRecipientOpenId !== args.senderId) {
+    console.log(`[codex-watch] resolved recent feishu open_id=${resolvedRecipientOpenId}`);
+  }
 
   let stopped = false;
   const shutdown = (signal: string) => {
@@ -87,6 +96,7 @@ async function main() {
         const changed = await processFile({
           filePath,
           args,
+          resolvedRecipientOpenId,
           state,
           partialBuffers,
           processedSet
@@ -139,11 +149,12 @@ async function bootstrapStateIfNeeded(args: WatcherArgs, state: WatcherState) {
 async function processFile(input: {
   filePath: string;
   args: WatcherArgs;
+  resolvedRecipientOpenId: string;
   state: WatcherState;
   partialBuffers: Map<string, string>;
   processedSet: Set<string>;
 }) {
-  const { filePath, args, state, partialBuffers, processedSet } = input;
+  const { filePath, args, resolvedRecipientOpenId, state, partialBuffers, processedSet } = input;
   const size = safeFileSize(filePath);
   const knownOffset = state.fileOffsets[filePath];
 
@@ -174,7 +185,7 @@ async function processFile(input: {
   }
 
   for (const line of lines) {
-    const event = parseTaskCompleteEvent(line, filePath, args);
+    const event = parseTaskCompleteEvent(line, filePath, args, resolvedRecipientOpenId);
     if (!event) {
       continue;
     }
@@ -196,7 +207,7 @@ async function processFile(input: {
   return true;
 }
 
-function parseTaskCompleteEvent(line: string, filePath: string, args: WatcherArgs) {
+function parseTaskCompleteEvent(line: string, filePath: string, args: WatcherArgs, senderId: string) {
   if (!line.trim()) {
     return null;
   }
@@ -236,7 +247,6 @@ function parseTaskCompleteEvent(line: string, filePath: string, args: WatcherArg
   const summary = `Codex任务完成：${summaryTitle}`;
   const detail = sanitizeDetail(summarySource || "任务已完成（无输出摘要）", 1800);
   const sessionId = args.sessionId || threadId;
-  const senderId = args.recipientOpenId || args.senderId;
   const occurredAt =
     String(record.timestamp || "").trim() || new Date(Number(payload.completed_at || 0) * 1000 || Date.now()).toISOString();
 
