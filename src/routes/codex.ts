@@ -9,6 +9,7 @@ import { z } from "zod";
 import { AppError } from "../lib/errors";
 import { type CodexIngressSecurityOptions, verifyCodexIngress } from "../modules/codex/codex-ingress-security";
 import { CodexEventService } from "../modules/codex/codex-event-service";
+import { getCodexGlobalWatcherRuntimeStatus } from "../modules/codex/codex-global-watcher";
 import { CodexQueryService } from "../modules/codex/codex-query-service";
 import { IdempotencyRepository } from "../storage/repositories/idempotency-repository";
 
@@ -162,6 +163,10 @@ export function registerCodexRoutes(
       failedCount,
       items
     };
+  });
+
+  app.get("/api/debug/watcher", async () => {
+    return getCodexGlobalWatcherRuntimeStatus();
   });
 
   app.get<{ Querystring: { limit?: string; statuses?: string } }>("/api/codex/sessions", async (request) => {

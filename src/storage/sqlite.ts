@@ -28,6 +28,7 @@ export function migrateDatabase(db: SqliteDatabase) {
   const migration = readFileSync(MIGRATION_PATH, "utf8");
   db.exec(migration);
   ensureAuditLogTaskIdColumn(db);
+  ensureFeishuPanelContextColumns(db);
 }
 
 function ensureAuditLogTaskIdColumn(db: SqliteDatabase) {
@@ -36,5 +37,14 @@ function ensureAuditLogTaskIdColumn(db: SqliteDatabase) {
 
   if (!hasTaskId) {
     db.exec("ALTER TABLE audit_logs ADD COLUMN task_id TEXT");
+  }
+}
+
+function ensureFeishuPanelContextColumns(db: SqliteDatabase) {
+  const columns = db.prepare("PRAGMA table_info(feishu_panel_contexts)").all() as Array<{ name: string }>;
+  const hasPendingComposeMode = columns.some((column) => column.name === "pending_compose_mode");
+
+  if (!hasPendingComposeMode) {
+    db.exec("ALTER TABLE feishu_panel_contexts ADD COLUMN pending_compose_mode TEXT");
   }
 }

@@ -1,5 +1,7 @@
 import { buildApp } from "./app";
 import { loadEnv } from "./config/env";
+import { existsSync } from "node:fs";
+import { loadEnvFile } from "node:process";
 import {
   resolveCodexGlobalWatcherDefaults,
   startCodexGlobalWatcher,
@@ -11,7 +13,17 @@ import {
   type FeishuWsBridgeHandle
 } from "./modules/feishu/feishu-ws-bridge";
 
+function loadLocalEnvFiles() {
+  const localEnvFiles = [".env.local", ".env"];
+  for (const file of localEnvFiles) {
+    if (existsSync(file)) {
+      loadEnvFile(file);
+    }
+  }
+}
+
 async function main() {
+  loadLocalEnvFiles();
   const env = loadEnv();
   const app = buildApp({ env });
   let watcherHandle: CodexGlobalWatcherHandle | null = null;

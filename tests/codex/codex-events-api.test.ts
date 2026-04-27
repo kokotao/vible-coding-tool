@@ -122,6 +122,7 @@ describe("codex events api", () => {
         }
       });
 
+      const longDetail = `${"任务完成明细".repeat(80)}-DETAIL-END-MARKER`;
       const response = await app.inject({
         method: "POST",
         url: "/api/codex/events",
@@ -131,6 +132,7 @@ describe("codex events api", () => {
           sessionId: "codex-session-001",
           status: "succeeded",
           summary: "all checks passed",
+          detail: longDetail,
           senderId: "codex_runner"
         }
       });
@@ -189,10 +191,126 @@ describe("codex events api", () => {
         eventId: "codex-evt-001"
       });
       expect(mockOpenApi.messageBodies).toHaveLength(1);
-      expect(mockOpenApi.messageBodies[0]).toContain("任务成功");
-      expect(mockOpenApi.messageBodies[0]).toContain("任务标题");
-      expect(mockOpenApi.messageBodies[0]).toContain("完成内容");
-      expect(mockOpenApi.messageBodies[0]).toContain("all checks passed");
+      const outboundPayload = JSON.parse(mockOpenApi.messageBodies[0]) as {
+        receive_id: string;
+        msg_type: string;
+        content: string;
+      };
+      expect(outboundPayload.msg_type).toBe("interactive");
+      expect(outboundPayload.content).toContain("任务成功");
+      expect(outboundPayload.content).toContain("任务标题");
+      expect(outboundPayload.content).toContain("完成内容");
+      expect(outboundPayload.content).toContain("all checks passed");
+      expect(outboundPayload.content).toContain("-DETAIL-END-MARKER");
+      expect(outboundPayload.content).not.toContain("任务标题：");
+      expect(outboundPayload.content).not.toContain("完成内容：");
+      expect((outboundPayload.content.match(/任务状态：/g) || []).length).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("deduplicates identical success notifications for the same task", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    const sessions = new ToolSessionRepository(db);
+    const tasks = new TaskRepository(db);
+    const now = new Date("2026-04-26T10:20:00.000Z").toISOString();
+
+    sessions.create({
+      sessionId: "codex-session-dup-001",
+      toolProvider: "codex",
+      toolSessionRef: "codex-runtime-dup-001",
+      status: "running",
+      createdBy: "ou_target_user",
+      createdAt: now,
+      updatedAt: now
+    });
+
+    tasks.create({
+      taskId: "task-codex-dup-001",
+      sessionId: "codex-session-dup-001",
+      triggerMessageId: null,
+      taskType: "command",
+      status: "running",
+      summary: "initial summary",
+      startedAt: now,
+      finishedAt: null
+    });
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const currentConfig = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...(currentConfig.json() as Record<string, unknown>),
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/codex/events",
+        payload: {
+          eventId: "codex-evt-dup-001",
+          taskId: "task-codex-dup-001",
+          sessionId: "codex-session-dup-001",
+          status: "succeeded",
+          summary: "all checks passed",
+          senderId: "codex_runner"
+        }
+      });
+
+      expect(first.statusCode).toBe(200);
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/codex/events",
+        payload: {
+          eventId: "codex-evt-dup-002",
+          taskId: "task-codex-dup-001",
+          sessionId: "codex-session-dup-001",
+          status: "succeeded",
+          summary: "all checks passed",
+          senderId: "codex_runner"
+        }
+      });
+
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toMatchObject({
+        accepted: true,
+        duplicate: false,
+        taskId: "task-codex-dup-001",
+        sessionId: "codex-session-dup-001",
+        status: "succeeded",
+        notify: {
+          sent: false,
+          skipped: true,
+          reason: "duplicate_notification"
+        }
+      });
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
     } finally {
       await app.close();
     }

@@ -322,4 +322,47 @@ describe("codex query api", () => {
 
     await app.close();
   });
+
+  it("returns watcher debug runtime status", async () => {
+    const db = seedCodexQueryData();
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent"
+      }
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/debug/watcher"
+    });
+    expect(response.statusCode).toBe(200);
+    const payload = response.json() as {
+      running: boolean;
+      autoStartConfigured: boolean;
+      statePath: string | null;
+      sessionsRoot: string | null;
+      archivedSessionsRoot: string | null;
+      scanArchived: boolean;
+      bootstrapMode: "tail" | "replay" | null;
+      sessionId: string | null;
+      senderId: string | null;
+      recipientOpenId: string | null;
+      startedAt: string | null;
+      stoppedAt: string | null;
+      lastTickAt: string | null;
+      lastSuccessfulPostAt: string | null;
+      lastPostedEventId: string | null;
+      lastError: string | null;
+    };
+
+    expect(typeof payload.running).toBe("boolean");
+    expect(typeof payload.autoStartConfigured).toBe("boolean");
+    expect(payload).toHaveProperty("lastSuccessfulPostAt");
+    expect(payload).toHaveProperty("lastTickAt");
+    expect(payload).toHaveProperty("lastError");
+
+    await app.close();
+  });
 });

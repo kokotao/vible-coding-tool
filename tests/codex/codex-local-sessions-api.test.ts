@@ -40,6 +40,15 @@ describe("codex local sessions api", () => {
           }
         }),
         JSON.stringify({
+          timestamp: "2026-04-26T23:12:35.500Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: "左侧按日期跳转并加载会话内容"
+          }
+        }),
+        JSON.stringify({
           timestamp: "2026-04-26T23:12:36.000Z",
           type: "response_item",
           payload: {
@@ -57,6 +66,15 @@ describe("codex local sessions api", () => {
             type: "function_call_output",
             call_id: "call-001",
             output: "src/app.ts"
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-26T23:12:37.500Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: "第三条用户消息作为标题"
           }
         }),
         JSON.stringify({
@@ -170,7 +188,7 @@ describe("codex local sessions api", () => {
         expect.arrayContaining(["vible-coding-Tool", "text-editor"])
       );
       const sessionOne = payload.items.find((item) => item.threadId === threadId1);
-      expect(sessionOne?.sessionTitle).toContain("本地会话目录可以单独写一页");
+      expect(sessionOne?.sessionTitle).toContain("第三条用户消息作为标题");
       expect(payload.groups[0].year).toBe("2026");
       expect(payload.groups[0].months[0].month).toBe("04");
       expect(payload.groups[0].months[0].days.map((day) => day.day)).toEqual(expect.arrayContaining(["26", "27"]));
@@ -190,8 +208,8 @@ describe("codex local sessions api", () => {
 
       expect(detail.threadId).toBe(threadId1);
       expect(detail.projectName).toBe("vible-coding-Tool");
-      expect(detail.sessionTitle).toContain("本地会话目录可以单独写一页");
-      expect(detail.messages).toHaveLength(4);
+      expect(detail.sessionTitle).toContain("第三条用户消息作为标题");
+      expect(detail.messages).toHaveLength(6);
       expect(detail.messages.map((message) => message.kind)).toEqual(
         expect.arrayContaining(["message", "tool_call", "tool_output"])
       );

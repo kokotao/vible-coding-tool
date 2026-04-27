@@ -13,7 +13,11 @@ const state = {
     selectedDayKey: null,
     selectedThreadId: null,
     detail: null,
-    loadError: null
+    loadError: null,
+    projectSearchText: "",
+    searchText: "",
+    activeTab: "chat",
+    sessionPage: 1
   },
   connectorConfigs: {},
   drawer: {
@@ -172,6 +176,7 @@ async function loadLocalSessionDetail(threadId) {
 async function loadLocalSessionsPage(threadId = null) {
   state.codexLocalSessions = await loadCodexLocalSessions();
   state.localSessionsPage.loadError = null;
+  state.localSessionsPage.sessionPage = 1;
 
   const projects = groupLocalSessionItems(state.codexLocalSessions.items || []);
   const selection = resolveLocalSessionSelection(projects, threadId || null);
@@ -230,290 +235,547 @@ function renderShell(title, subtitle, actionsHtml, contentHtml) {
   `;
 }
 
-function renderMetricCard(label, value) {
-  return `
-    <article class="metric-card">
-      <div class="label">${label}</div>
-      <div class="value">${value}</div>
-    </article>
-  `;
+function formatLocalSessionDateLabel(year, month, day) {
+  return `${year}-${month}-${day}`;
+}
+
+function formatLocalSessionDateTime(value) {
+  if (!value) {
+    return "-";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
+}
+
+function shortenLocalSessionThreadId(threadId) {
+  return threadId ? `${threadId.slice(0, 8)}…${threadId.slice(-4)}` : "-";
+}
+
+function matchesLocalSessionQuery(item, query) {
+  if (!query) {
+    return true;
+  }
+
+  const haystack = [
+    item.projectName,
+    item.projectPath,
+    item.sessionTitle,
+    item.rolloutFileName,
+    item.threadId,
+    item.updatedAt,
+    `${item.year}-${item.month}-${item.day}`
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(query);
+}
+
+function matchesLocalProjectQuery(project, query) {
+  if (!query) {
+    return true;
+  }
+
+  const haystack = [project.projectName, project.projectPath, project.count].join(" ").toLowerCase();
+  return haystack.includes(query);
+}
+
+function renderLocalIcon(name) {
+  const size = 16;
+  if (name === "search") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"></circle><path d="M16 16l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>`;
+  }
+  if (name === "folder") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M3.5 7.5h5l2 2h10v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"></path><path d="M3.5 9.5h17" fill="none" stroke="currentColor" stroke-width="1.6"></path></svg>`;
+  }
+  if (name === "refresh") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M20 12a8 8 0 0 1-14.5 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><path d="M4.5 16.6L5 20l3.4-.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M4 12a8 8 0 0 1 14.4-4.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><path d="M19.5 7.2L19 3.8l-3.4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>`;
+  }
+  if (name === "settings") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M12 8.2a3.8 3.8 0 1 1 0 7.6 3.8 3.8 0 0 1 0-7.6zm8.1 3.8 1.6 1-1.6 2.7-1.9-.5a7.8 7.8 0 0 1-1.3 1.3l.5 1.9-2.7 1.6-1-1.6a7.8 7.8 0 0 1-1.8 0l-1 1.6-2.7-1.6.5-1.9a7.8 7.8 0 0 1-1.3-1.3l-1.9.5L2.3 13l1.6-1a7.8 7.8 0 0 1 0-1.8l-1.6-1 1.6-2.7 1.9.5a7.8 7.8 0 0 1 1.3-1.3l-.5-1.9 2.7-1.6 1 1.6a7.8 7.8 0 0 1 1.8 0l1-1.6 2.7 1.6-.5 1.9a7.8 7.8 0 0 1 1.3 1.3l1.9-.5 1.6 2.7-1.6 1c.1.6.1 1.2 0 1.8z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"></path></svg>`;
+  }
+  if (name === "copy") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><rect x="9" y="8" width="11" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"></rect><path d="M5 16H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>`;
+  }
+  if (name === "share") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M8 12l8-5m-8 5 8 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><circle cx="6" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"></circle><circle cx="18" cy="7" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"></circle><circle cx="18" cy="17" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"></circle></svg>`;
+  }
+  if (name === "download") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M4 17.5v1.2A2.3 2.3 0 0 0 6.3 21h11.4a2.3 2.3 0 0 0 2.3-2.3v-1.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>`;
+  }
+  if (name === "delete") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M4.5 7h15m-11 0V5.5A1.5 1.5 0 0 1 10 4h4a1.5 1.5 0 0 1 1.5 1.5V7m-9 0 1 12a1.8 1.8 0 0 0 1.8 1.6h5.4a1.8 1.8 0 0 0 1.8-1.6l1-12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path></svg>`;
+  }
+  if (name === "filter") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M4 6h16l-6.2 7v5l-3.6-2v-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path></svg>`;
+  }
+  if (name === "sort") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M7 5v14m0 0-3-3m3 3 3-3M17 19V5m0 0-3 3m3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>`;
+  }
+  if (name === "chat") {
+    return `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 3.5c5 0 9 3.4 9 7.6s-4 7.6-9 7.6a11.2 11.2 0 0 1-4.1-.8l-4 2 .9-3.7C3.6 15 3 13.1 3 11.1 3 6.9 7 3.5 12 3.5z" fill="url(#lswChatGrad)"></path><circle cx="9.3" cy="11.1" r="1" fill="#fff"></circle><circle cx="12" cy="11.1" r="1" fill="#fff"></circle><circle cx="14.7" cy="11.1" r="1" fill="#fff"></circle><defs><linearGradient id="lswChatGrad" x1="3" y1="4" x2="21" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#5b9bff"></stop><stop offset="1" stop-color="#82a9ff"></stop></linearGradient></defs></svg>`;
+  }
+  if (name === "pin") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M8.5 3h7l-.8 5.1 2.9 2.9v1.5h-4.8L12 21l-.8-8.5H6.4V11l2.9-2.9z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"></path></svg>`;
+  }
+  if (name === "home") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5v8a1.5 1.5 0 0 1-1.5 1.5h-4.2v-6h-4.6v6H5.5A1.5 1.5 0 0 1 4 18.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"></path></svg>`;
+  }
+  return "";
+}
+
+function deriveLocalSessionArtifacts(messages) {
+  const filePattern = /(?:\/|\\)?[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)*\.(?:ts|tsx|js|jsx|json|jsonl|md|py|java|go|css|scss|html|yml|yaml|sql|sh|bat|txt)\b/g;
+  const fileSet = new Set();
+  const tools = [];
+  for (const message of messages) {
+    const content = String(message.content || "");
+    const matchedFiles = content.match(filePattern) || [];
+    for (const fileName of matchedFiles) {
+      fileSet.add(fileName);
+    }
+    if (message.kind === "tool_call") {
+      tools.push({
+        name: message.name || "tool_call",
+        timestamp: message.timestamp || "",
+        preview: content
+      });
+    }
+  }
+
+  return {
+    files: [...fileSet].slice(0, 100),
+    tools
+  };
+}
+
+function formatDashboardNow() {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date());
+}
+
+function resolveDashboardTone(status) {
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
+
+  if (!normalized) {
+    return "neutral";
+  }
+
+  if (normalized.includes("run") || normalized.includes("active") || normalized.includes("connect") || normalized.includes("success") || normalized.includes("succeed")) {
+    return "success";
+  }
+
+  if (normalized.includes("pending") || normalized.includes("wait")) {
+    return "warning";
+  }
+
+  if (normalized.includes("fail") || normalized.includes("error") || normalized.includes("disconnect")) {
+    return "danger";
+  }
+
+  return "neutral";
+}
+
+function renderDashboardIcon(name) {
+  const size = 20;
+
+  if (name === "running") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"></circle><path d="M12 7.5v4.8l3.4 2.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>`;
+  }
+  if (name === "risk") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M12 3.8 3.5 8v6.3c0 3.9 3.4 7.1 8.5 8.9 5.1-1.8 8.5-5 8.5-8.9V8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><path d="M12 9v5.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><circle cx="12" cy="16.9" r="1.1" fill="currentColor"></circle></svg>`;
+  }
+  if (name === "chat") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M12 4c5 0 9 3.3 9 7.3s-4 7.3-9 7.3c-1.3 0-2.6-.2-3.8-.7L4 20l1.1-3.5C3.8 15 3 13.2 3 11.3 3 7.3 7 4 12 4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><circle cx="8.7" cy="11.2" r="1" fill="currentColor"></circle><circle cx="12" cy="11.2" r="1" fill="currentColor"></circle><circle cx="15.3" cy="11.2" r="1" fill="currentColor"></circle></svg>`;
+  }
+  if (name === "failed") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"></rect><path d="M8 3.8v3.5m8-3.5v3.5M7.8 12.3h8.4m-8.4 3.4h5.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>`;
+  }
+  if (name === "feishu") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="M4 10.4 12.5 4 20 10l-8.6 3.3z" fill="#4fc3ff"></path><path d="M7.1 13.4 16 10l4 3.2-8.7 4.8z" fill="#4b8bff"></path><path d="M4 10.5 11.3 18 4 20z" fill="#74d8ff"></path></svg>`;
+  }
+  if (name === "qq") {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><ellipse cx="12" cy="11.2" rx="5.5" ry="6.2" fill="#111827"></ellipse><ellipse cx="12" cy="10.7" rx="3.3" ry="3.8" fill="#fff"></ellipse><path d="M8.4 15.2c0 2 1.6 3.6 3.6 3.6s3.6-1.6 3.6-3.6v-.5H8.4z" fill="#fbbf24"></path><circle cx="10.9" cy="10.4" r="0.45" fill="#111827"></circle><circle cx="13.1" cy="10.4" r="0.45" fill="#111827"></circle></svg>`;
+  }
+
+  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"></circle></svg>`;
 }
 
 function renderDashboardPage() {
   const dashboard = state.dashboard;
+  if (!dashboard) {
+    appRoot.innerHTML = `<div class="mc-dashboard-empty">首页数据暂不可用，请稍后刷新。</div>`;
+    return;
+  }
+
+  const codexOverview = state.codexOverview ?? {
+    summary: null,
+    activeTasks: [],
+    recentSessions: [],
+    updatedAt: null,
+    loadError: null
+  };
+
+  const codexLocalSessions = state.codexLocalSessions ?? {
+    groups: [],
+    items: [],
+    totalFiles: 0,
+    totalThreads: 0,
+    scannedAt: null,
+    loadError: null
+  };
+
+  const localSessionProjects = groupLocalSessionItems(codexLocalSessions.items || []);
+
   const metrics = [
-    renderMetricCard("运行中任务", dashboard.summary.runningTaskCount),
-    renderMetricCard("待确认风险", dashboard.summary.pendingRiskCount),
-    renderMetricCard("活跃会话", dashboard.summary.activeSessionCount),
-    renderMetricCard("今日失败", dashboard.summary.failedTaskCountToday)
-  ].join("");
-
-  const timelineHtml = dashboard.taskTimeline.length
-    ? dashboard.taskTimeline
-        .map(
-          (item) => `
-            <article class="timeline-item">
-              <div class="row">
-                <div>
-                  <div class="timeline-title">${escapeHtml(item.taskTitle || item.sessionId)}</div>
-                  <div class="subtext">${escapeHtml(item.sessionId)}</div>
-                </div>
-                <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
-              </div>
-              <div class="timeline-summary">${escapeHtml(item.summary)}</div>
-              <div class="row" style="margin-top:12px;">
-                <div class="subtext">${escapeHtml(item.updatedAt)}</div>
-                <div style="display:flex;gap:8px;">
-                  <a class="button small primary" href="#/tasks/${encodeURIComponent(item.taskId)}">查看任务</a>
-                  <button class="button small" ${item.canStop ? `data-stop-task="${escapeHtml(item.taskId)}"` : "disabled"}>
-                    ${item.canStop ? "停止任务" : "处理中"}
-                  </button>
-                </div>
-              </div>
-            </article>
-          `
-        )
-        .join("")
-    : `<div class="empty-state">当前还没有任务事件。等飞书或 QQ 的指令进入网关后，这里会开始滚动显示任务流。</div>`;
-
-  const sessionsHtml = dashboard.activeSessions.length
-    ? dashboard.activeSessions
-        .map(
-          (item) => `
-            <a class="session-row" href="#/sessions/${encodeURIComponent(item.sessionId)}">
-              <div class="row">
-                <div>
-                  <div class="session-title">${escapeHtml(item.taskTitle || item.sessionId)}</div>
-                  <div class="subtext">${escapeHtml(item.sessionId)}</div>
-                </div>
-                <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
-              </div>
-              <div class="session-meta">${escapeHtml(item.lastMessageSummary || "暂无消息")}</div>
-            </a>
-          `
-        )
-        .join("")
-    : `<div class="empty-state">暂无活跃会话。等第一批 session 被机器人消息激活后，这里会出现列表。</div>`;
-
-  const codexOverview = state.codexOverview;
-  const codexActiveTasksHtml = codexOverview?.activeTasks?.length
-    ? codexOverview.activeTasks
-        .map(
-          (item) => `
-            <article class="session-row">
-              <div class="row">
-                <div>
-                  <div class="session-title">${escapeHtml(item.taskTitle || item.taskId)}</div>
-                  <div class="subtext">${escapeHtml(item.sessionId)}</div>
-                </div>
-                <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
-              </div>
-              <div class="session-meta">${escapeHtml(item.summary || "暂无摘要")}</div>
-              <div class="row" style="margin-top:10px;">
-                <a class="button small" href="#/tasks/${encodeURIComponent(item.taskId)}">任务详情</a>
-                <a class="button small subtle" href="#/codex/tasks/${encodeURIComponent(item.taskId)}/events">事件流</a>
-              </div>
-            </article>
-          `
-        )
-        .join("")
-    : `<div class="empty-state">近 24 小时没有进行中的 Codex 任务。</div>`;
-
-  const codexSessionsHtml = codexOverview?.recentSessions?.length
-    ? codexOverview.recentSessions
-        .map(
-          (item) => `
-            <a class="session-row" href="#/sessions/${encodeURIComponent(item.sessionId)}">
-              <div class="row">
-                <div>
-                  <div class="session-title">${escapeHtml(item.latestTaskSummary || item.sessionId)}</div>
-                  <div class="subtext">${escapeHtml(item.sessionId)}</div>
-                </div>
-                <span class="${statusClass(item.status)}">${escapeHtml(item.status)}</span>
-              </div>
-              <div class="session-meta">${escapeHtml(item.latestMessageSummary || "暂无消息")}</div>
-            </a>
-          `
-        )
-        .join("")
-    : `<div class="empty-state">近 24 小时没有 Codex 会话更新。</div>`;
-
-  const codexSummaryHtml = codexOverview?.summary
-    ? `
-      <div class="detail-list">
-        <div class="detail-row"><span class="subtext">运行中</span><strong>${escapeHtml(codexOverview.summary.runningTaskCount)}</strong></div>
-        <div class="detail-row"><span class="subtext">成功</span><strong>${escapeHtml(codexOverview.summary.succeededTaskCount)}</strong></div>
-        <div class="detail-row"><span class="subtext">失败</span><strong>${escapeHtml(codexOverview.summary.failedTaskCount)}</strong></div>
-        <div class="detail-row"><span class="subtext">活跃会话</span><strong>${escapeHtml(codexOverview.summary.activeSessionCount)}</strong></div>
-      </div>
-    `
-    : `<div class="empty-state">Codex 总览暂不可用：${escapeHtml(codexOverview?.loadError || "unknown_error")}</div>`;
-
-  const codexLocalSessions = state.codexLocalSessions;
-  const localSessionProjects = groupLocalSessionItems(codexLocalSessions?.items || []);
-  const codexLocalSessionPreviewHtml =
-    localSessionProjects.length > 0
-      ? localSessionProjects.slice(0, 3).map(
-          (project) => `
-            <article class="session-row">
-              <div class="row">
-                <div>
-                  <div class="session-title">${escapeHtml(project.projectName)}</div>
-                  <div class="subtext">${escapeHtml(project.projectPath || "未知路径")}</div>
-                </div>
-                <span class="${statusClass("info")}">${escapeHtml(project.count)} 条</span>
-              </div>
-              <div class="session-meta">
-                ${project.days
-                  .slice(0, 3)
-                  .map((day) => `${escapeHtml(day.label)} (${escapeHtml(day.count)})`)
-                  .join("<br/>")}
-              </div>
-            </article>
-          `
-        ).join("")
-      : `<div class="empty-state">本地 Codex 会话暂无可展示数据：${escapeHtml(codexLocalSessions?.loadError || "empty")}</div>`;
-
-  const risksHtml = dashboard.pendingRisks.length
-    ? dashboard.pendingRisks
-        .map(
-          (item) => `
-            <article class="risk-card">
-              <div class="row">
-                <div>
-                  <div class="risk-title">${escapeHtml(item.taskTitle || item.sessionId)}</div>
-                  <div class="subtext">${escapeHtml(item.sessionId)}</div>
-                </div>
-                <span class="${statusClass("pending_confirm")}">待确认</span>
-              </div>
-              <div class="risk-meta">${escapeHtml(item.riskReason)}</div>
-              <div class="row" style="margin-top:12px;">
-                <div class="subtext">发起人：${escapeHtml(item.requestedBy)}</div>
-                <div style="display:flex;gap:8px;">
-                  <button class="button small" data-confirm-risk="${escapeHtml(item.confirmationToken)}">确认</button>
-                  <button class="button small" data-reject-risk="${escapeHtml(item.confirmationToken)}">取消</button>
-                </div>
-              </div>
-            </article>
-          `
-        )
-        .join("")
-    : `<div class="empty-state">当前没有待确认风险。大部分确认会优先在飞书 / QQ 消息里完成。</div>`;
-
-  const connectorsHtml = dashboard.connectors
+    {
+      key: "running",
+      label: "进行中任务",
+      subtitle: "RUNNING TASKS",
+      value: dashboard.summary.runningTaskCount
+    },
+    {
+      key: "risk",
+      label: "待确认风险",
+      subtitle: "PENDING RISKS",
+      value: dashboard.summary.pendingRiskCount
+    },
+    {
+      key: "chat",
+      label: "活跃会话",
+      subtitle: "ACTIVE CONVERSATIONS",
+      value: dashboard.summary.activeSessionCount
+    },
+    {
+      key: "failed",
+      label: "今日失败",
+      subtitle: "TODAY FAILED",
+      value: dashboard.summary.failedTaskCountToday
+    }
+  ]
     .map(
-      (connector) => `
-        <article class="connector-card">
-          <div class="row">
-            <div>
-              <div class="session-title">${connector.platform.toUpperCase()}</div>
-              <div class="subtext">${escapeHtml(connector.defaultChannelName || "尚未绑定默认群 / 频道")}</div>
-            </div>
-            <span class="${statusClass(connector.connectionStatus)}">${escapeHtml(connector.connectionStatus)}</span>
-          </div>
-          <div class="detail-list" style="margin-top:14px;">
-            <div class="detail-row">
-              <span class="subtext">接入模式</span>
-              <strong>${escapeHtml(connector.eventMode)}</strong>
-            </div>
-            <div class="detail-row">
-              <span class="subtext">最近联调</span>
-              <strong>${escapeHtml(connector.lastTestResult || "未测试")}</strong>
-            </div>
-          </div>
-          <div class="row" style="margin-top:14px;">
-            <div class="subtext">${connector.enabled ? "已可用于机器人消息链路" : "未完成接入"}</div>
-            <button class="button small primary" data-open-connector="${connector.platform}">编辑配置</button>
+      (item) => `
+        <article class="mc-metric-card mc-metric-${item.key}">
+          <div class="mc-metric-icon">${renderDashboardIcon(item.key)}</div>
+          <div>
+            <div class="mc-metric-value">${escapeHtml(item.value)}</div>
+            <div class="mc-metric-label">${escapeHtml(item.label)}</div>
+            <div class="mc-metric-subtitle">${escapeHtml(item.subtitle)}</div>
           </div>
         </article>
       `
     )
     .join("");
 
-  renderShell(
-    "任务驾驶舱与连接中心",
-    "机器人消息仍然是主交互面，这个页面负责把任务、会话、风控和连接状态集中展示出来，并承接少量补位操作。",
-    [navButton("首页总览", "#/"), navButton("本地会话页", "#/local-sessions"), navButton("健康检查", "/health")].join(""),
+  const timelineHtml = dashboard.taskTimeline.length
+    ? dashboard.taskTimeline
+        .slice(0, 8)
+        .map((item) => {
+          const tone = resolveDashboardTone(item.status);
+          const canStop = Boolean(item.canStop);
+          return `
+            <article class="mc-timeline-item">
+              <div class="mc-timeline-dot mc-tone-${tone}"></div>
+              <div class="mc-timeline-content">
+                <div class="mc-timeline-head">
+                  <span class="mc-timeline-time">${escapeHtml(formatLocalSessionDateTime(item.updatedAt))}</span>
+                  <span class="mc-status mc-status-${tone}">${escapeHtml(item.status || "UNKNOWN")}</span>
+                </div>
+                <h3>${escapeHtml(item.taskTitle || item.sessionId || item.taskId)}</h3>
+                <p>${escapeHtml(item.summary || "暂无摘要")}</p>
+                <div class="mc-timeline-actions">
+                  <a class="mc-inline-btn" href="#/tasks/${encodeURIComponent(item.taskId)}">查看任务</a>
+                  <button class="mc-inline-btn secondary" ${canStop ? `data-stop-task="${escapeHtml(item.taskId)}"` : "disabled"}>
+                    ${canStop ? "停止任务" : "处理中"}
+                  </button>
+                </div>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="mc-empty">当前暂无任务事件。等飞书或 QQ 指令进入网关后，这里会滚动更新。</div>`;
+
+  const risksHtml = dashboard.pendingRisks.length
+    ? dashboard.pendingRisks
+        .slice(0, 4)
+        .map(
+          (item) => `
+            <article class="mc-risk-item">
+              <div class="mc-risk-head">
+                <h3>${escapeHtml(item.taskTitle || item.sessionId)}</h3>
+                <span class="mc-status mc-status-warning">待确认</span>
+              </div>
+              <p>${escapeHtml(item.riskReason || "无风险说明")}</p>
+              <div class="mc-risk-foot">
+                <span>发起人：${escapeHtml(item.requestedBy || "-")}</span>
+                <div class="mc-risk-actions">
+                  <button class="mc-inline-btn" data-confirm-risk="${escapeHtml(item.confirmationToken)}">确认</button>
+                  <button class="mc-inline-btn secondary" data-reject-risk="${escapeHtml(item.confirmationToken)}">拒绝</button>
+                </div>
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : `
+      <div class="mc-empty">
+        <div class="mc-empty-icon">${renderDashboardIcon("risk")}</div>
+        <strong>当前没有待确认风险</strong>
+        <p>大部分确认动作优先在飞书 / QQ 消息里完成。</p>
+      </div>
+    `;
+
+  const connectorsHtml = dashboard.connectors.length
+    ? dashboard.connectors
+        .map((connector) => {
+          const tone = resolveDashboardTone(connector.connectionStatus);
+          const platformName = String(connector.platform || "").toLowerCase();
+          const iconName = platformName === "feishu" ? "feishu" : platformName === "qq" ? "qq" : "running";
+          return `
+            <article class="mc-connector-item">
+              <div class="mc-connector-head">
+                <div class="mc-connector-id">
+                  <span class="mc-connector-icon">${renderDashboardIcon(iconName)}</span>
+                  <div>
+                    <h3>${escapeHtml(String(connector.platform || "").toUpperCase())}</h3>
+                    <p>${escapeHtml(connector.defaultChannelName || "尚未绑定默认群 / 频道")}</p>
+                  </div>
+                </div>
+                <span class="mc-status mc-status-${tone}">${escapeHtml(connector.connectionStatus || "UNKNOWN")}</span>
+              </div>
+              <div class="mc-connector-meta">
+                <span>接入模式：${escapeHtml(connector.eventMode || "-")}</span>
+                <span>最近联调：${escapeHtml(connector.lastTestResult || "未测试")}</span>
+              </div>
+              <div class="mc-connector-foot">
+                <span>${connector.enabled ? "已可用于机器人消息链路" : "未完成接入"}</span>
+                <button class="mc-inline-btn" data-open-connector="${escapeHtml(connector.platform)}">编辑配置</button>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="mc-empty">暂无连接器配置。</div>`;
+
+  const localSessionsHtml = localSessionProjects.length
+    ? localSessionProjects
+        .slice(0, 3)
+        .map(
+          (project) => `
+            <article class="mc-local-item">
+              <div class="mc-local-head">
+                <h3>${escapeHtml(project.projectName)}</h3>
+                <span>${escapeHtml(project.count)} 条</span>
+              </div>
+              <p>${escapeHtml(project.projectPath || "-")}</p>
+              <div class="mc-local-days">
+                ${project.days
+                  .slice(0, 3)
+                  .map((day) => `<span>${escapeHtml(day.label)} (${escapeHtml(day.count)})</span>`)
+                  .join("")}
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : `<div class="mc-empty">暂无本地会话目录数据。</div>`;
+
+  const activeSessionsHtml = dashboard.activeSessions.length
+    ? dashboard.activeSessions
+        .slice(0, 5)
+        .map((item) => {
+          const tone = resolveDashboardTone(item.status);
+          return `
+            <a class="mc-session-item" href="#/sessions/${encodeURIComponent(item.sessionId)}">
+              <div>
+                <h3>${escapeHtml(item.taskTitle || item.sessionId)}</h3>
+                <p>${escapeHtml(item.lastMessageSummary || "暂无消息")}</p>
+              </div>
+              <span class="mc-status mc-status-${tone}">${escapeHtml(item.status || "UNKNOWN")}</span>
+            </a>
+          `;
+        })
+        .join("")
+    : `<div class="mc-empty">暂无活跃会话。</div>`;
+
+  const codexSummary = codexOverview.summary;
+  const codexSummaryHtml = codexSummary
+    ? `
+      <div class="mc-codex-metrics">
+        <span><strong>${escapeHtml(codexSummary.runningTaskCount)}</strong> 运行中</span>
+        <span><strong>${escapeHtml(codexSummary.succeededTaskCount)}</strong> 成功</span>
+        <span><strong>${escapeHtml(codexSummary.failedTaskCount)}</strong> 失败</span>
+        <span><strong>${escapeHtml(codexSummary.activeSessionCount)}</strong> 活跃会话</span>
+      </div>
     `
-      <section class="metrics">${metrics}</section>
-      <section class="content-grid">
-        <div class="stack">
-          <div class="panel">
-            <div class="panel-head">
+    : `<div class="mc-empty">Codex 总览暂不可用：${escapeHtml(codexOverview.loadError || "unknown_error")}</div>`;
+
+  const codexActiveTasksHtml = codexOverview.activeTasks?.length
+    ? codexOverview.activeTasks
+        .slice(0, 4)
+        .map((item) => {
+          const tone = resolveDashboardTone(item.status);
+          return `
+            <article class="mc-codex-item">
+              <div class="mc-codex-item-head">
+                <h3>${escapeHtml(item.taskTitle || item.taskId)}</h3>
+                <span class="mc-status mc-status-${tone}">${escapeHtml(item.status || "UNKNOWN")}</span>
+              </div>
+              <p>${escapeHtml(item.summary || "暂无摘要")}</p>
+              <div class="mc-codex-item-actions">
+                <a class="mc-inline-btn secondary" href="#/tasks/${encodeURIComponent(item.taskId)}">任务详情</a>
+                <a class="mc-inline-btn secondary" href="#/codex/tasks/${encodeURIComponent(item.taskId)}/events">事件流</a>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="mc-empty">近 24 小时没有进行中的 Codex 任务。</div>`;
+
+  const codexRecentSessionsHtml = codexOverview.recentSessions?.length
+    ? codexOverview.recentSessions
+        .slice(0, 4)
+        .map((item) => {
+          const tone = resolveDashboardTone(item.status);
+          return `
+            <a class="mc-codex-session" href="#/sessions/${encodeURIComponent(item.sessionId)}">
+              <div>
+                <h3>${escapeHtml(item.latestTaskSummary || item.sessionId)}</h3>
+                <p>${escapeHtml(item.latestMessageSummary || "暂无消息")}</p>
+              </div>
+              <span class="mc-status mc-status-${tone}">${escapeHtml(item.status || "UNKNOWN")}</span>
+            </a>
+          `;
+        })
+        .join("")
+    : `<div class="mc-empty">近 24 小时没有 Codex 会话更新。</div>`;
+
+  appRoot.innerHTML = `
+    <div class="mc-dashboard">
+      <div class="mc-orb mc-orb-a"></div>
+      <div class="mc-orb mc-orb-b"></div>
+      <header class="mc-topbar">
+        <div class="mc-title-wrap">
+          <h1>任务驾驶舱与连接中心</h1>
+          <div class="mc-title-sub">MISSION CONTROL & CONNECTION CENTER</div>
+          <p>机器人消息仍然是主交互面，这个页面集中展示任务、会话、风控和连接状态，网页端承接少量补位操作。</p>
+        </div>
+        <div class="mc-head-side">
+          <div class="mc-runtime">
+            <span>◷ ${escapeHtml(formatDashboardNow())}</span>
+            <span class="mc-runtime-dot">系统运行中</span>
+          </div>
+          <div class="mc-quick-links">
+            <a href="#/" class="mc-nav-chip active">首页总览</a>
+            <a href="#/local-sessions" class="mc-nav-chip">本地会话页</a>
+            <a href="/health" class="mc-nav-chip">健康检查</a>
+          </div>
+        </div>
+      </header>
+
+      <section class="mc-metric-grid">${metrics}</section>
+
+      <section class="mc-grid">
+        <div class="mc-left">
+          <article class="mc-panel">
+            <div class="mc-panel-head">
               <div>
                 <h2>实时任务时间线</h2>
-                <p>优先展示现在系统正在忙什么，再顺着任务进入详情追踪。</p>
+                <p>优先展示系统正在执行什么，快速下钻到任务详情。</p>
               </div>
             </div>
-            <div class="timeline">${timelineHtml}</div>
-          </div>
-          <div class="panel">
-            <div class="panel-head">
+            <div class="mc-timeline">${timelineHtml}</div>
+          </article>
+
+          <article class="mc-panel">
+            <div class="mc-panel-head">
               <div>
                 <h2>Codex 左侧接管总览（24h）</h2>
-                <p>直接展示 Codex 任务与会话状态，并可下钻到事件流页面。</p>
+                <p>更新时间：${escapeHtml(codexOverview.updatedAt || "-")}</p>
               </div>
             </div>
-            <div class="detail-list">${codexSummaryHtml}</div>
-            <div class="panel-head" style="margin-top:16px;">
-              <div>
-                <h2 style="font-size:18px;">活跃任务</h2>
-              </div>
-              <div class="subtext">更新时间：${escapeHtml(codexOverview?.updatedAt || "-")}</div>
+            ${codexSummaryHtml}
+            <div class="mc-two-col">
+              <section>
+                <h3>活跃任务</h3>
+                <div class="mc-codex-list">${codexActiveTasksHtml}</div>
+              </section>
+              <section>
+                <h3>最近会话</h3>
+                <div class="mc-codex-list">${codexRecentSessionsHtml}</div>
+              </section>
             </div>
-            <div class="session-list">${codexActiveTasksHtml}</div>
-            <div class="panel-head" style="margin-top:16px;">
-              <div>
-                <h2 style="font-size:18px;">最近会话</h2>
-              </div>
-            </div>
-            <div class="session-list">${codexSessionsHtml}</div>
-            <div class="panel-head" style="margin-top:16px;">
-              <div>
-                <h2 style="font-size:18px;">本地会话目录</h2>
-              </div>
-              <button class="button small primary" data-open-local-sessions="true">打开目录页</button>
-            </div>
-            <div class="detail-list">
-              <div class="detail-row"><span class="subtext">线程数</span><strong>${escapeHtml(codexLocalSessions?.totalThreads ?? 0)}</strong></div>
-              <div class="detail-row"><span class="subtext">文件数</span><strong>${escapeHtml(codexLocalSessions?.totalFiles ?? 0)}</strong></div>
-              <div class="detail-row"><span class="subtext">扫描时间</span><strong>${escapeHtml(codexLocalSessions?.scannedAt || "-")}</strong></div>
-            </div>
-            <div class="session-list" style="margin-top: 14px;">${codexLocalSessionPreviewHtml}</div>
-          </div>
-          <div class="panel">
-            <div class="panel-head">
-              <div>
-                <h2>最近活跃会话</h2>
-                <p>展示标题为主、sessionId 为辅的活跃会话列表。</p>
-              </div>
-            </div>
-            <div class="session-list">${sessionsHtml}</div>
-          </div>
+          </article>
         </div>
-        <div class="stack">
-          <div class="panel">
-            <div class="panel-head">
+
+        <aside class="mc-right">
+          <article class="mc-panel">
+            <div class="mc-panel-head">
               <div>
                 <h2>风险待确认</h2>
-                <p>网页端可补做确认，但主确认链路仍优先在飞书 / QQ 里完成。</p>
+                <p>主确认链路优先在飞书 / QQ，网页端做补位确认。</p>
               </div>
             </div>
-            <div class="risk-list">${risksHtml}</div>
-          </div>
-          <div class="panel">
-            <div class="panel-head">
+            <div class="mc-risk-list">${risksHtml}</div>
+          </article>
+
+          <article class="mc-panel">
+            <div class="mc-panel-head">
               <div>
                 <h2>连接中心</h2>
-                <p>这里是首页级的操作型区域，不只是状态板。</p>
+                <p>这里是首页级操作区，不只是状态面板。</p>
               </div>
             </div>
-            <div class="connector-list">${connectorsHtml}</div>
-          </div>
-        </div>
+            <div class="mc-connector-list">${connectorsHtml}</div>
+          </article>
+
+          <article class="mc-panel">
+            <div class="mc-panel-head">
+              <div>
+                <h2>本地会话目录</h2>
+                <p>线程数 ${escapeHtml(codexLocalSessions.totalThreads || 0)} · 文件数 ${escapeHtml(codexLocalSessions.totalFiles || 0)}</p>
+              </div>
+              <button class="mc-inline-btn secondary" data-open-local-sessions="true">打开目录页</button>
+            </div>
+            <div class="mc-local-list">${localSessionsHtml}</div>
+            <div class="mc-foot-note">扫描时间：${escapeHtml(codexLocalSessions.scannedAt || "-")}</div>
+          </article>
+
+          <article class="mc-panel">
+            <div class="mc-panel-head">
+              <div>
+                <h2>最近活跃会话</h2>
+                <p>展示标题优先，sessionId 在详情中可见。</p>
+              </div>
+            </div>
+            <div class="mc-session-list">${activeSessionsHtml}</div>
+          </article>
+        </aside>
       </section>
-    `
-  );
+    </div>
+  `;
 }
 
 function groupLocalSessionItems(items) {
@@ -637,176 +899,380 @@ function resolveLocalSessionSelection(projects, preferredThreadId = null) {
 }
 
 function renderLocalSessionMessage(message) {
-  const body = escapeHtml(message.content).replaceAll("\n", "<br/>");
-  const roleLabel = message.role === "user" ? "用户" : message.role === "tool" ? "工具" : "助手";
-  const kindLabel =
-    message.kind === "tool_call" ? "工具调用" : message.kind === "tool_output" ? "工具返回" : roleLabel;
+  const roleLabel = message.role === "user" ? "用户" : "助手";
+  const roleClass = message.role === "user" ? "user" : "assistant";
+  const body = escapeHtml(message.content || "").replaceAll("\n", "<br/>");
+  const avatarText = message.role === "user" ? "用户" : "助手";
 
   return `
-    <article class="local-message ${message.kind} ${message.role}">
-      <div class="local-message-meta">
-        <span class="local-message-role">${kindLabel}</span>
-        <span class="local-message-time">${escapeHtml(message.timestamp || "-")}</span>
+    <article class="lsw-chat-row ${roleClass === "user" ? "is-user" : ""}">
+      <div class="lsw-chat-avatar">${escapeHtml(avatarText)}</div>
+      <div class="lsw-chat-bubble ${roleClass === "user" ? "is-user" : ""}">
+        <div class="lsw-chat-meta">
+          <strong>${escapeHtml(roleLabel)}</strong>
+          <span>${escapeHtml(formatLocalSessionDateTime(message.timestamp))}</span>
+        </div>
+        <div class="lsw-chat-content">${body}</div>
       </div>
-      ${message.name ? `<div class="local-message-name">${escapeHtml(message.name)}</div>` : ""}
-      <div class="local-message-body">${body}</div>
     </article>
   `;
+}
+
+function isLocalToolEvent(message) {
+  return message.kind === "tool_call" || message.kind === "tool_output";
+}
+
+function isLocalNormalChatMessage(message) {
+  return message.kind === "message" && (message.role === "assistant" || message.role === "user");
+}
+
+function renderLocalToolFoldRow(block, index) {
+  const summary = `工具调用与返回 ${block.length} 条`;
+  return `
+    <details class="lsw-tool-fold">
+      <summary>
+        <span>${escapeHtml(summary)}</span>
+        <span class="lsw-tool-fold-time">${escapeHtml(formatLocalSessionDateTime(block[0]?.timestamp || ""))}</span>
+      </summary>
+      <div class="lsw-tool-fold-body">
+        ${block
+          .map(
+            (item, subIndex) => `
+              <div class="lsw-tool-fold-row">
+                <div class="lsw-tool-fold-title">${escapeHtml(item.kind === "tool_call" ? "工具调用" : "工具返回")} ${escapeHtml(
+              String(index + 1)
+            )}.${escapeHtml(String(subIndex + 1))}</div>
+                ${item.name ? `<div class="lsw-tool-fold-name">${escapeHtml(item.name)}</div>` : ""}
+                <pre>${escapeHtml(String(item.content || "")).slice(0, 1200)}</pre>
+              </div>
+            `
+          )
+          .join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderLocalChatTimeline(messages, dateLabel) {
+  if (!messages.length) {
+    return `<div class="lsw-empty">没有可展示的聊天内容。</div>`;
+  }
+
+  const blocks = [];
+  let toolBuffer = [];
+
+  const flushTools = () => {
+    if (toolBuffer.length > 0) {
+      blocks.push({ type: "tool", items: [...toolBuffer] });
+      toolBuffer = [];
+    }
+  };
+
+  for (const message of messages) {
+    if (isLocalNormalChatMessage(message)) {
+      flushTools();
+      blocks.push({ type: "chat", item: message });
+      continue;
+    }
+    if (isLocalToolEvent(message)) {
+      toolBuffer.push(message);
+    }
+  }
+  flushTools();
+
+  if (!blocks.length) {
+    return `<div class="lsw-empty">当前会话没有普通对话消息，仅包含工具调用记录。</div>`;
+  }
+
+  return `
+    <div class="lsw-date-divider">${escapeHtml(dateLabel)}</div>
+    ${blocks
+      .map((block, index) => (block.type === "chat" ? renderLocalSessionMessage(block.item) : renderLocalToolFoldRow(block.items, index)))
+      .join("")}
+  `;
+}
+
+function scrollLocalChatToBottom() {
+  const chatScroll = appRoot.querySelector(".lsw-chat-scroll");
+  if (!(chatScroll instanceof HTMLElement)) {
+    return;
+  }
+  chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
 function renderLocalSessionsPage() {
   const snapshot = state.codexLocalSessions;
   if (!snapshot) {
-    renderShell(
-      "本地会话目录",
-      "正在扫描本地 rollout 文件。",
-      [navButton("返回总览", "#/")].join(""),
-      `<div class="panel"><div class="empty-state">正在加载本地会话目录...</div></div>`
-    );
+    appRoot.innerHTML = `<div class="lsw-root"><div class="lsw-loading">正在扫描本地 rollout 文件...</div></div>`;
     return;
   }
 
-  const projects = groupLocalSessionItems(snapshot.items || []);
-  const selection = resolveLocalSessionSelection(projects, state.localSessionsPage.selectedThreadId);
-  const selectedProject = selection.project;
-  const selectedDay = selection.day;
-  const selectedSession = selection.session;
+  const allProjects = groupLocalSessionItems(snapshot.items || []);
+  const projectSearchText = state.localSessionsPage.projectSearchText.trim();
+  const projectSearchQuery = projectSearchText.toLowerCase();
+  const sessionSearchText = state.localSessionsPage.searchText.trim();
+  const sessionSearchQuery = sessionSearchText.toLowerCase();
+  const activeTab = state.localSessionsPage.activeTab || "chat";
+
+  const filteredProjects = allProjects.filter((project) => matchesLocalProjectQuery(project, projectSearchQuery));
+  const poolProjects = filteredProjects.length > 0 ? filteredProjects : allProjects;
+
+  let selection = resolveLocalSessionSelection(poolProjects, state.localSessionsPage.selectedThreadId);
+  let selectedProject = selection.project;
+  let selectedDay = selection.day;
+  let selectedSession = selection.session;
 
   state.localSessionsPage.selectedProjectKey = selectedProject?.projectKey || null;
   state.localSessionsPage.selectedDayKey = selectedDay?.dayKey || null;
   state.localSessionsPage.selectedThreadId = selectedSession?.threadId || null;
 
+  const sessionsByDay = (selectedDay?.items || []).filter((item) => matchesLocalSessionQuery(item, sessionSearchQuery));
+  const pageSize = 8;
+  const totalPages = Math.max(1, Math.ceil(sessionsByDay.length / pageSize));
+  const sessionPage = Math.min(Math.max(state.localSessionsPage.sessionPage || 1, 1), totalPages);
+  state.localSessionsPage.sessionPage = sessionPage;
+  const pageStart = (sessionPage - 1) * pageSize;
+  const pagedSessions = sessionsByDay.slice(pageStart, pageStart + pageSize);
+
   const selectedDetail = state.localSessionsPage.detail;
   const detail = selectedDetail && selectedSession && selectedDetail.threadId === selectedSession.threadId ? selectedDetail : null;
+  const chatMessages = detail ? detail.messages.slice(-120) : [];
+  const artifacts = detail ? deriveLocalSessionArtifacts(detail.messages) : { files: [], tools: [] };
+  const chatOnlyCount = chatMessages.filter((message) => isLocalNormalChatMessage(message)).length;
+  const toolOnlyCount = chatMessages.filter((message) => isLocalToolEvent(message)).length;
+  const tabCount = {
+    chat: chatOnlyCount,
+    files: artifacts.files.length,
+    tools: toolOnlyCount,
+    meta: 4
+  };
 
-  const metrics = [
-    renderMetricCard("项目数", projects.length),
-    renderMetricCard("会话数", snapshot.totalFiles),
-    renderMetricCard("线程数", snapshot.totalThreads),
-    renderMetricCard("扫描时间", snapshot.scannedAt || "-")
-  ].join("");
+  const projectTotalCount = poolProjects.reduce((sum, item) => sum + item.count, 0);
+  const selectedProjectMessageCount = selectedProject?.sessions.reduce((sum, item) => sum + item.messageCount, 0) || 0;
+  const dayLabel = selectedDay ? `${selectedDay.label}` : "请选择日期";
+  const scannedAt = formatLocalSessionDateTime(snapshot.scannedAt);
+  const tabs = [
+    { key: "chat", label: "聊天", count: tabCount.chat },
+    { key: "files", label: "文件", count: tabCount.files },
+    { key: "tools", label: "工具调用", count: tabCount.tools },
+    { key: "meta", label: "元数据", count: tabCount.meta }
+  ];
 
-  const projectTreeHtml = projects.length
-    ? projects
+  const projectItemsHtml = filteredProjects.length
+    ? filteredProjects
         .map(
           (project) => `
-            <article class="local-project-card ${project.projectKey === selectedProject?.projectKey ? "active" : ""}">
-              <button class="local-project-button" data-select-project="${escapeHtml(project.projectKey)}">
-                <div>
-                  <div class="local-project-title">${escapeHtml(project.projectName)}</div>
-                  <div class="subtext">${escapeHtml(project.projectPath || "未知路径")}</div>
-                </div>
-                <span class="local-project-count">${escapeHtml(project.count)}</span>
-              </button>
-              <div class="local-day-chip-list">
-                ${project.days
-                  .map(
-                    (day) => `
-                      <button class="local-day-chip ${day.dayKey === selectedDay?.dayKey && project.projectKey === selectedProject?.projectKey ? "active" : ""}" data-select-day="${escapeHtml(
-                      day.dayKey
-                    )}" data-project-key="${escapeHtml(project.projectKey)}">
-                        <span>${escapeHtml(day.label)}</span>
-                        <strong>${escapeHtml(day.count)}</strong>
-                      </button>
-                    `
-                  )
-                  .join("")}
-              </div>
-            </article>
+            <button class="lsw-project-item ${project.projectKey === selectedProject?.projectKey ? "active" : ""}" data-select-project="${escapeHtml(
+              project.projectKey
+            )}">
+              <span class="lsw-project-icon">${renderLocalIcon("folder")}</span>
+              <span class="lsw-project-main">
+                <strong>${escapeHtml(project.projectName)}</strong>
+                <small>${escapeHtml(project.projectPath || "-")}</small>
+              </span>
+              <span class="lsw-project-count">${escapeHtml(project.count)}</span>
+            </button>
           `
         )
         .join("")
-    : `<div class="empty-state">没有扫描到本地 Codex 会话。</div>`;
+    : `<div class="lsw-empty">没有匹配到项目。</div>`;
 
-  const sessionListHtml = selectedDay?.items?.length
-    ? selectedDay.items
+  const dayOptionsHtml = (selectedProject?.days || [])
+    .map(
+      (day) => `
+        <option value="${escapeHtml(day.dayKey)}" ${day.dayKey === selectedDay?.dayKey ? "selected" : ""}>
+          ${escapeHtml(day.label)} (${escapeHtml(day.count)})
+        </option>
+      `
+    )
+    .join("");
+
+  const sessionItemsHtml = pagedSessions.length
+    ? pagedSessions
         .map(
           (item) => `
-            <a class="local-session-card ${item.threadId === selectedSession?.threadId ? "active" : ""}" href="#/local-sessions/${encodeURIComponent(
+            <a class="lsw-session-item ${item.threadId === selectedSession?.threadId ? "active" : ""}" href="#/local-sessions/${encodeURIComponent(
               item.threadId
             )}">
-              <div class="local-session-card-head">
-                <div>
-                  <div class="local-session-title">${escapeHtml(item.sessionTitle)}</div>
-                  <div class="subtext">${escapeHtml(item.projectName)} · ${escapeHtml(item.rolloutFileName)}</div>
-                </div>
-                <span class="status-pill">${escapeHtml(item.messageCount)} 条</span>
+              <div class="lsw-session-item-head">
+                <span class="dot"></span>
+                <h3>${escapeHtml(item.sessionTitle)}</h3>
               </div>
-              <div class="local-session-card-meta">
-                <span>${escapeHtml(item.year)}-${escapeHtml(item.month)}-${escapeHtml(item.day)}</span>
-                <span>${escapeHtml(item.updatedAt)}</span>
+              <div class="lsw-session-item-meta">${escapeHtml(item.year)}-${escapeHtml(item.month)}-${escapeHtml(item.day)} · ${escapeHtml(
+                item.messageCount
+              )} 条消息 · ${escapeHtml(item.rolloutFileName)}</div>
+              <div class="lsw-session-item-footer">
+                <span class="lsw-session-badge">${escapeHtml(item.projectName)}</span>
+                <span>${escapeHtml(formatLocalSessionDateTime(item.updatedAt))}</span>
               </div>
             </a>
           `
         )
         .join("")
-    : `<div class="empty-state">当前日期下没有可展示的会话。</div>`;
+    : `<div class="lsw-empty">当前条件下没有会话。</div>`;
 
-  const detailHtml = detail
-    ? `
-      <div class="local-detail-card">
-        <div class="panel-head">
-          <div>
-            <h2>${escapeHtml(detail.sessionTitle)}</h2>
-            <p>${escapeHtml(detail.projectName)} · ${escapeHtml(detail.rolloutFileName)}</p>
-          </div>
-          <div class="local-detail-stats">
-            <span class="status-pill">${escapeHtml(detail.messageCount)} 条</span>
-            <span class="status-pill">${escapeHtml(detail.year)}-${escapeHtml(detail.month)}-${escapeHtml(detail.day)}</span>
-          </div>
+  const paginationHtml =
+    totalPages > 1
+      ? Array.from({ length: Math.min(totalPages, 7) }, (_, idx) => {
+          const page = idx + 1;
+          return `<button class="lsw-page-btn ${page === sessionPage ? "active" : ""}" data-local-session-page="${page}">${page}</button>`;
+        }).join("")
+      : `<button class="lsw-page-btn active">1</button>`;
+
+  let detailPanelHtml = `<div class="lsw-empty">选择会话后显示详细聊天内容。</div>`;
+  if (state.localSessionsPage.loadError) {
+    detailPanelHtml = `<div class="lsw-empty">会话详情加载失败：${escapeHtml(state.localSessionsPage.loadError)}</div>`;
+  } else if (detail) {
+    const tabBodyHtml =
+      activeTab === "files"
+        ? artifacts.files.length
+          ? `<div class="lsw-list-card">${artifacts.files
+              .map((file) => `<div class="lsw-list-row">${escapeHtml(file)}</div>`)
+              .join("")}</div>`
+          : `<div class="lsw-empty">未识别到文件路径记录。</div>`
+        : activeTab === "tools"
+          ? artifacts.tools.length
+            ? `<div class="lsw-list-card">${artifacts.tools
+                .map(
+                  (tool) => `
+                    <div class="lsw-list-row">
+                      <strong>${escapeHtml(tool.name)}</strong>
+                      <span>${escapeHtml(formatLocalSessionDateTime(tool.timestamp))}</span>
+                      <p>${escapeHtml(tool.preview).slice(0, 220)}</p>
+                    </div>
+                  `
+                )
+                .join("")}</div>`
+            : `<div class="lsw-empty">没有工具调用记录。</div>`
+          : activeTab === "meta"
+            ? `
+              <div class="lsw-meta-grid">
+                <div><label>项目</label><p>${escapeHtml(detail.projectName)}</p></div>
+                <div><label>路径</label><p>${escapeHtml(detail.projectPath || "-")}</p></div>
+                <div><label>Thread</label><p>${escapeHtml(detail.threadId)}</p></div>
+                <div><label>更新时间</label><p>${escapeHtml(formatLocalSessionDateTime(detail.updatedAt))}</p></div>
+              </div>
+            `
+            : `
+              <div class="lsw-chat-scroll">
+                ${renderLocalChatTimeline(chatMessages, formatLocalSessionDateLabel(detail.year, detail.month, detail.day))}
+              </div>
+              <div class="lsw-chat-input">
+                <input type="text" disabled placeholder="在此输入消息，或输入 @ 选择工具" />
+                <button type="button" disabled>${renderLocalIcon("share")} 发送</button>
+              </div>
+            `;
+
+    detailPanelHtml = `
+      <header class="lsw-chat-head">
+        <div class="lsw-chat-title">
+          <h2>${escapeHtml(detail.sessionTitle)}</h2>
+          <p>${renderLocalIcon("folder")} ${escapeHtml(detail.projectName)} · ${escapeHtml(detail.messageCount)} 条消息 · ${escapeHtml(
+      detail.rolloutFileName
+    )}</p>
         </div>
-        <div class="detail-keygrid">
-          <div class="key-item"><div class="label">Project</div><div class="value">${escapeHtml(detail.projectName)}</div></div>
-          <div class="key-item"><div class="label">Path</div><div class="value">${escapeHtml(detail.projectPath || "-")}</div></div>
-          <div class="key-item"><div class="label">Thread</div><div class="value">${escapeHtml(detail.threadId)}</div></div>
-          <div class="key-item"><div class="label">Updated</div><div class="value">${escapeHtml(detail.updatedAt)}</div></div>
+        <div class="lsw-chat-actions">
+          <button class="lsw-icon-btn" type="button" title="复制">${renderLocalIcon("copy")}</button>
+          <button class="lsw-icon-btn" type="button" title="分享">${renderLocalIcon("share")}</button>
+          <button class="lsw-icon-btn" type="button" title="下载">${renderLocalIcon("download")}</button>
+          <button class="lsw-icon-btn" type="button" title="删除">${renderLocalIcon("delete")}</button>
+          <button class="lsw-info-btn" type="button">会话信息</button>
         </div>
-        <div class="local-message-feed">
-          ${detail.messages.length ? detail.messages.map((message) => renderLocalSessionMessage(message)).join("") : `<div class="empty-state">没有解析到可展示的聊天内容。</div>`}
+      </header>
+      <div class="lsw-tabs">${tabs
+        .map(
+          (tab) => `
+            <button class="lsw-tab ${tab.key === activeTab ? "active" : ""}" data-select-local-session-tab="${tab.key}">
+              ${escapeHtml(tab.label)}${tab.count ? ` (${escapeHtml(tab.count)})` : ""}
+            </button>
+          `
+        )
+        .join("")}</div>
+      ${tabBodyHtml}
+    `;
+  }
+
+  appRoot.innerHTML = `
+    <div class="lsw-root">
+      <div class="lsw-frame">
+        <header class="lsw-top">
+          <div class="lsw-window-dots"><span></span><span></span><span></span></div>
+          <div class="lsw-top-left">
+            <div class="lsw-chat-icon">${renderLocalIcon("chat")}</div>
+            <div>
+              <h1>本地会话工作台</h1>
+              <p>按项目聚合本地 Codex 会话，快速查看历史对话、上下文与工具调用记录。</p>
+            </div>
+          </div>
+          <div class="lsw-top-right">
+            <div class="lsw-top-meta">${renderLocalIcon("refresh")} 扫描时间：${escapeHtml(scannedAt)}</div>
+            <a class="lsw-light-btn lsw-home-link" href="#/">${renderLocalIcon("home")} 返回首页</a>
+            <button class="lsw-light-btn" data-refresh-local-sessions="true">${renderLocalIcon("refresh")} 刷新扫描</button>
+            <button class="lsw-primary-btn" data-refresh-local-sessions="true">刷新目录</button>
+          </div>
+        </header>
+
+        <div class="lsw-grid">
+          <aside class="lsw-col lsw-col-projects">
+            <div class="lsw-col-head">
+              <h3>项目目录</h3>
+              <button type="button" class="lsw-icon-btn">${renderLocalIcon("pin")}</button>
+            </div>
+            <label class="lsw-search">
+              ${renderLocalIcon("search")}
+              <input type="search" value="${escapeHtml(projectSearchText)}" placeholder="搜索项目名称或路径" data-local-project-search="true" />
+            </label>
+            <button type="button" class="lsw-all-projects">
+              <span>${renderLocalIcon("folder")} 全部项目</span>
+              <strong>${escapeHtml(poolProjects.length)}</strong>
+            </button>
+            <div class="lsw-project-list">${projectItemsHtml}</div>
+            <div class="lsw-col-footer">共 ${escapeHtml(poolProjects.length)} 个项目，${escapeHtml(projectTotalCount)} 个会话</div>
+          </aside>
+
+          <section class="lsw-col lsw-col-sessions">
+            <div class="lsw-project-summary">
+              <div class="lsw-project-summary-title">${renderLocalIcon("folder")} ${escapeHtml(selectedProject?.projectName || "未选择项目")}</div>
+              <div class="lsw-project-summary-path">${escapeHtml(selectedProject?.projectPath || "-")}</div>
+              <div class="lsw-project-summary-count">共 ${escapeHtml(selectedProject?.count || 0)} 个会话</div>
+            </div>
+            <div class="lsw-session-tools">
+              <label class="lsw-search">
+                ${renderLocalIcon("search")}
+                <input type="search" value="${escapeHtml(sessionSearchText)}" placeholder="搜索会话标题" data-local-session-search="true" />
+              </label>
+              <button type="button" class="lsw-icon-btn">${renderLocalIcon("filter")}</button>
+              <button type="button" class="lsw-icon-btn">${renderLocalIcon("sort")}</button>
+            </div>
+            <label class="lsw-day-select-wrap">
+              <span>会话日期</span>
+              <select class="lsw-day-select" data-select-day-dropdown="true" data-project-key="${escapeHtml(selectedProject?.projectKey || "")}">
+                ${dayOptionsHtml || `<option value="">暂无可选日期</option>`}
+              </select>
+            </label>
+            <div class="lsw-session-list">${sessionItemsHtml}</div>
+            <div class="lsw-pagination">
+              <button class="lsw-page-arrow" ${sessionPage <= 1 ? "disabled" : `data-local-session-page="${sessionPage - 1}"`}>&lsaquo;</button>
+              ${paginationHtml}
+              <button class="lsw-page-arrow" ${sessionPage >= totalPages ? "disabled" : `data-local-session-page="${sessionPage + 1}"`}>&rsaquo;</button>
+            </div>
+            <div class="lsw-col-footer">${escapeHtml(dayLabel)} · ${escapeHtml(sessionsByDay.length)} 个结果 · 当前第 ${escapeHtml(
+    sessionPage
+  )}/${escapeHtml(totalPages)} 页</div>
+          </section>
+
+          <section class="lsw-col lsw-col-chat">
+            ${detailPanelHtml}
+          </section>
         </div>
       </div>
-    `
-    : state.localSessionsPage.loadError
-      ? `<div class="empty-state">会话详情加载失败：${escapeHtml(state.localSessionsPage.loadError)}</div>`
-      : `<div class="empty-state">选择一个会话后，这里会展示聊天气泡内容。</div>`;
+    </div>
+  `;
 
-  renderShell(
-    "本地会话目录",
-    "按项目和日期聚合本地 Codex rollout 文件，左侧选项目和日期，中间选会话，右侧看聊天内容。",
-    [navButton("返回总览", "#/"), `<button class="button small primary" data-refresh-local-sessions="true">刷新目录</button>`].join(""),
-    `
-      <section class="metrics">${metrics}</section>
-      <section class="local-sessions-layout">
-        <aside class="panel local-sidebar">
-          <div class="panel-head">
-            <div>
-              <h2>项目与日期</h2>
-              <p>先按项目归类，再按日期筛选到具体会话。</p>
-            </div>
-          </div>
-          <div class="local-project-tree">${projectTreeHtml}</div>
-        </aside>
-        <section class="panel local-session-column">
-          <div class="panel-head">
-            <div>
-              <h2>${escapeHtml(selectedProject?.projectName || "会话列表")}</h2>
-              <p>${escapeHtml(selectedDay?.label || "请选择左侧日期")}</p>
-            </div>
-          </div>
-          <div class="local-session-list">${sessionListHtml}</div>
-        </section>
-        <section class="panel local-detail-column">
-          <div class="panel-head">
-            <div>
-              <h2>聊天内容</h2>
-              <p>只渲染真正的对话气泡和必要的工具调用。</p>
-            </div>
-          </div>
-          ${detailHtml}
-        </section>
-      </section>
-    `
-  );
+  if (detail && activeTab === "chat") {
+    scrollLocalChatToBottom();
+    setTimeout(scrollLocalChatToBottom, 0);
+  }
 }
 
 function renderTaskDetailPage(detail) {
@@ -1137,6 +1603,61 @@ function bindLocalSessionsEvents() {
     });
   });
 
+  appRoot.querySelectorAll("[data-local-project-search]").forEach((input) => {
+    input.addEventListener("input", async () => {
+      state.localSessionsPage.projectSearchText = input.value;
+      state.localSessionsPage.sessionPage = 1;
+      renderLocalSessionsPage();
+      bindLocalSessionsEvents();
+      const nextInput = appRoot.querySelector("[data-local-project-search]");
+      if (nextInput instanceof HTMLInputElement) {
+        nextInput.focus();
+        const cursor = nextInput.value.length;
+        nextInput.setSelectionRange(cursor, cursor);
+      }
+    });
+  });
+
+  appRoot.querySelectorAll("[data-local-session-search]").forEach((input) => {
+    input.addEventListener("input", async () => {
+      state.localSessionsPage.searchText = input.value;
+      state.localSessionsPage.sessionPage = 1;
+      renderLocalSessionsPage();
+      bindLocalSessionsEvents();
+      const nextInput = appRoot.querySelector("[data-local-session-search]");
+      if (nextInput instanceof HTMLInputElement) {
+        nextInput.focus();
+        const cursor = nextInput.value.length;
+        nextInput.setSelectionRange(cursor, cursor);
+      }
+    });
+  });
+
+  appRoot.querySelectorAll("[data-select-local-session-tab]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const tab = button.getAttribute("data-select-local-session-tab");
+      if (!tab) {
+        return;
+      }
+
+      state.localSessionsPage.activeTab = tab;
+      renderLocalSessionsPage();
+      bindLocalSessionsEvents();
+    });
+  });
+
+  appRoot.querySelectorAll("[data-local-session-page]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const nextPage = Number(button.getAttribute("data-local-session-page"));
+      if (!nextPage || Number.isNaN(nextPage)) {
+        return;
+      }
+      state.localSessionsPage.sessionPage = nextPage;
+      renderLocalSessionsPage();
+      bindLocalSessionsEvents();
+    });
+  });
+
   appRoot.querySelectorAll("[data-select-project]").forEach((button) => {
     button.addEventListener("click", async () => {
       const projectKey = button.getAttribute("data-select-project");
@@ -1155,6 +1676,7 @@ function bindLocalSessionsEvents() {
       state.localSessionsPage.selectedProjectKey = selectedProject.projectKey;
       state.localSessionsPage.selectedDayKey = selectedDay?.dayKey || null;
       state.localSessionsPage.selectedThreadId = selectedSession?.threadId || null;
+      state.localSessionsPage.sessionPage = 1;
       await refreshLocalSessionDetail(state.localSessionsPage.selectedThreadId);
       renderLocalSessionsPage();
       bindLocalSessionsEvents();
@@ -1181,6 +1703,34 @@ function bindLocalSessionsEvents() {
       state.localSessionsPage.selectedProjectKey = selectedProject.projectKey;
       state.localSessionsPage.selectedDayKey = selectedDay.dayKey;
       state.localSessionsPage.selectedThreadId = selectedSession.threadId;
+      state.localSessionsPage.sessionPage = 1;
+      await refreshLocalSessionDetail(selectedSession.threadId);
+      renderLocalSessionsPage();
+      bindLocalSessionsEvents();
+    });
+  });
+
+  appRoot.querySelectorAll("[data-select-day-dropdown]").forEach((selectElement) => {
+    selectElement.addEventListener("change", async () => {
+      const dayKey = selectElement instanceof HTMLSelectElement ? selectElement.value : "";
+      const projectKey = selectElement.getAttribute("data-project-key");
+      if (!dayKey || !projectKey || !state.codexLocalSessions) {
+        return;
+      }
+
+      const projects = groupLocalSessionItems(state.codexLocalSessions.items || []);
+      const selectedProject = projects.find((item) => item.projectKey === projectKey);
+      const selectedDay = selectedProject?.days.find((item) => item.dayKey === dayKey) || null;
+      const selectedSession = selectedDay?.items[0] || null;
+
+      if (!selectedProject || !selectedDay || !selectedSession) {
+        return;
+      }
+
+      state.localSessionsPage.selectedProjectKey = selectedProject.projectKey;
+      state.localSessionsPage.selectedDayKey = selectedDay.dayKey;
+      state.localSessionsPage.selectedThreadId = selectedSession.threadId;
+      state.localSessionsPage.sessionPage = 1;
       await refreshLocalSessionDetail(selectedSession.threadId);
       renderLocalSessionsPage();
       bindLocalSessionsEvents();

@@ -13,6 +13,7 @@ const MAX_PROCESSED_KEYS = 5000;
 
 type WatcherState = {
   version: 1;
+  initialized: boolean;
   fileOffsets: Record<string, number>;
   processedEventKeys: string[];
   updatedAt: string;
@@ -53,13 +54,81 @@ export type CodexGlobalWatcherDefaults = {
   signingSecret?: string;
 };
 
+export type CodexGlobalWatcherRuntimeStatus = {
+  running: boolean;
+  autoStartConfigured: boolean;
+  statePath: string | null;
+  sessionsRoot: string | null;
+  archivedSessionsRoot: string | null;
+  scanArchived: boolean;
+  bootstrapMode: "tail" | "replay" | null;
+  sessionId: string | null;
+  senderId: string | null;
+  recipientOpenId: string | null;
+  startedAt: string | null;
+  stoppedAt: string | null;
+  lastTickAt: string | null;
+  lastSuccessfulPostAt: string | null;
+  lastPostedEventId: string | null;
+  lastError: string | null;
+};
+
+const codexGlobalWatcherRuntimeStatus: Omit<CodexGlobalWatcherRuntimeStatus, "autoStartConfigured"> = {
+  running: false,
+  statePath: null,
+  sessionsRoot: null,
+  archivedSessionsRoot: null,
+  scanArchived: false,
+  bootstrapMode: null,
+  sessionId: null,
+  senderId: null,
+  recipientOpenId: null,
+  startedAt: null,
+  stoppedAt: null,
+  lastTickAt: null,
+  lastSuccessfulPostAt: null,
+  lastPostedEventId: null,
+  lastError: null
+};
+
 export async function startCodexGlobalWatcher(args: StartCodexGlobalWatcherArgs) {
+  const startedAt = new Date().toISOString();
+  updateWatcherRuntimeStatus({
+    running: true,
+    statePath: resolve(args.statePath),
+    sessionsRoot: resolve(args.sessionsRoot),
+    archivedSessionsRoot: resolve(args.archivedSessionsRoot),
+    scanArchived: args.scanArchived,
+    bootstrapMode: args.bootstrapMode,
+    sessionId: args.sessionId,
+    senderId: args.senderId,
+    recipientOpenId: args.recipientOpenId,
+    startedAt,
+    stoppedAt: null,
+    lastError: null
+  });
+
   const watcher = new CodexGlobalWatcher(args);
-  await watcher.start();
-  const handle: CodexGlobalWatcherHandle = {
-    stop: () => watcher.stop()
-  };
-  return handle;
+  try {
+    await watcher.start();
+    updateWatcherRuntimeStatus({
+      running: true,
+      startedAt,
+      stoppedAt: null,
+      lastError: null
+    });
+    const handle: CodexGlobalWatcherHandle = {
+      stop: () => watcher.stop()
+    };
+    return handle;
+  } catch (error) {
+    updateWatcherRuntimeStatus({
+      running: false,
+      startedAt: null,
+      lastError: toErrorMessage(error)
+    });
+    throw error;
+  }
 }
 
 export function resolveCodexGlobalWatcherDefaults(): CodexGlobalWatcherDefaults {
@@ -85,6 +154,13 @@ export function resolveCodexGlobalWatcherDefaults(): CodexGlobalWatcherDefaults 
     bootstrapMode,
     ingressToken: normalizeNullable(process.env.CODEX_INGRESS_TOKEN) || undefined,
     signingSecret: normalizeNullable(process.env.CODEX_INGRESS_SIGNING_SECRET) || undefined
+  };
+}
+
+export function getCodexGlobalWatcherRuntimeStatus(): CodexGlobalWatcherRuntimeStatus {
+  return {
+    ...codexGlobalWatcherRuntimeStatus,
+    autoStartConfigured: resolveCodexGlobalWatcherDefaults().autoStart
   };
 }
 
@@ -118,7 +194,11 @@ class CodexGlobalWatcher {
 
     await this.tick();
     this.timer = setInterval(() => {
-      void this.tick();
+      void this.tick().catch((error) => {
+        updateWatcherRuntimeStatus({
+          lastError: toErrorMessage(error)
+        });
+      });
     }, Math.max(this.args.pollIntervalMs, 50));
     this.timer.unref();
   }
@@ -132,6 +212,10 @@ class CodexGlobalWatcher {
       await sleep(10);
     }
     this.persistState();
+    updateWatcherRuntimeStatus({
+      running: false,
+      stoppedAt: new Date().toISOString()
+    });
   }
 
   private async tick() {
@@ -139,8 +223,15 @@ class CodexGlobalWatcher {
       return;
     }
     this.busy = true;
+    updateWatcherRuntimeStatus({
+      lastTickAt: new Date().toISOString()
+    });
     try {
       const files = this.listRolloutFiles();
+      if (!this.state.initialized) {
+        this.bootstrapState(files);
+        return;
+      }
       const fileSet = new Set(files);
       let changed = false;
 
@@ -165,6 +256,16 @@ class CodexGlobalWatcher {
     } finally {
       this.busy = false;
     }
+  }
+
+  private bootstrapState(files: string[]) {
+    if (this.args.bootstrapMode === "tail") {
+      for (const filePath of files) {
+        this.state.fileOffsets[filePath] = safeFileSize(filePath);
+      }
+    }
+    this.state.initialized = true;
+    this.persistState();
   }
 
   private async processFile(filePath: string) {
@@ -252,15 +353,28 @@ class CodexGlobalWatcher {
     }
 
     const fetchImpl = this.args.fetchImpl ?? fetch;
-    const response = await fetchImpl(`${this.args.gatewayUrl.replace(/\/+$/, "")}/api/codex/events`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload)
-    });
+    try {
+      const response = await fetchImpl(`${this.args.gatewayUrl.replace(/\/+$/, "")}/api/codex/events`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload)
+      });
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`watcher post failed: status=${response.status}; body=${text}`);
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(`watcher post failed: status=${response.status}; body=${text}`);
+      }
+
+      updateWatcherRuntimeStatus({
+        lastSuccessfulPostAt: new Date().toISOString(),
+        lastPostedEventId: typeof payload.eventId === "string" ? payload.eventId : null,
+        lastError: null
+      });
+    } catch (error) {
+      updateWatcherRuntimeStatus({
+        lastError: toErrorMessage(error)
+      });
+      throw error;
     }
   }
 
@@ -371,6 +485,7 @@ function loadState(statePath: string): WatcherState {
   if (!existsSync(statePath)) {
     return {
       version: 1,
+      initialized: false,
       fileOffsets: {},
       processedEventKeys: [],
       updatedAt: new Date().toISOString()
@@ -381,6 +496,7 @@ function loadState(statePath: string): WatcherState {
     const parsed = JSON.parse(readFileSync(statePath, "utf8")) as Partial<WatcherState>;
     return {
       version: 1,
+      initialized: typeof parsed.initialized === "boolean" ? parsed.initialized : true,
       fileOffsets: parsed.fileOffsets || {},
       processedEventKeys: trimProcessedKeys(parsed.processedEventKeys || []),
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString()
@@ -388,6 +504,7 @@ function loadState(statePath: string): WatcherState {
   } catch {
     return {
       version: 1,
+      initialized: false,
       fileOffsets: {},
       processedEventKeys: [],
       updatedAt: new Date().toISOString()
@@ -431,4 +548,15 @@ function resolveHomePath(rawPath: string) {
     return resolve(home, normalized.slice(2));
   }
   return resolve(normalized);
+}
+
+function updateWatcherRuntimeStatus(patch: Partial<Omit<CodexGlobalWatcherRuntimeStatus, "autoStartConfigured">>) {
+  Object.assign(codexGlobalWatcherRuntimeStatus, patch);
+}
+
+function toErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }

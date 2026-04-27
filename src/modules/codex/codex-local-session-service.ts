@@ -545,9 +545,10 @@ function normalizeRole(value: unknown): LocalSessionMessageRole {
 }
 
 function buildSessionTitle(messages: LocalCodexSessionMessage[]) {
-  const firstUserMessage = messages.find((message) => message.kind === "message" && message.role === "user");
-  if (firstUserMessage?.content) {
-    return summarizeText(firstUserMessage.content, 72) || firstUserMessage.content;
+  const userMessages = messages.filter((message) => message.kind === "message" && message.role === "user");
+  const preferredUserMessage = userMessages[2] || userMessages[0];
+  if (preferredUserMessage?.content) {
+    return summarizeText(preferredUserMessage.content, 72) || preferredUserMessage.content;
   }
 
   const firstAssistantMessage = messages.find((message) => message.kind === "message" && message.role === "assistant");

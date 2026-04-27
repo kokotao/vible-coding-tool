@@ -11,8 +11,10 @@ import { ConnectorService } from "./modules/connectors/connector-service";
 import { CodexDispatchService } from "./modules/codex/codex-dispatch-service";
 import { CodexEventService } from "./modules/codex/codex-event-service";
 import { CodexLocalSessionService } from "./modules/codex/codex-local-session-service";
+import { CodexModelCatalogService } from "./modules/codex/codex-model-catalog-service";
 import { CodexQueryService } from "./modules/codex/codex-query-service";
 import { DashboardService } from "./modules/dashboard/dashboard-service";
+import { FeishuCommandPanelService } from "./modules/feishu/feishu-command-panel-service";
 import { FeishuIdentityService } from "./modules/feishu/feishu-identity-service";
 import { FeishuDirectoryService } from "./modules/feishu/feishu-directory-service";
 import { FeishuWebhookService } from "./modules/feishu/feishu-webhook-service";
@@ -31,6 +33,7 @@ import { registerTaskRoutes } from "./routes/tasks";
 import { AuditLogRepository } from "./storage/repositories/audit-log-repository";
 import { ConnectorConfigRepository } from "./storage/repositories/connector-config-repository";
 import { FeishuIdentityRepository } from "./storage/repositories/feishu-identity-repository";
+import { FeishuPanelContextRepository } from "./storage/repositories/feishu-panel-context-repository";
 import { IdempotencyRepository } from "./storage/repositories/idempotency-repository";
 import { MessageRepository } from "./storage/repositories/message-repository";
 import { RiskConfirmationRepository } from "./storage/repositories/risk-confirmation-repository";
@@ -57,11 +60,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const idempotencyRepository = new IdempotencyRepository(db);
   const connectorConfigRepository = new ConnectorConfigRepository(db);
   const feishuIdentityRepository = new FeishuIdentityRepository(db);
+  const feishuPanelContextRepository = new FeishuPanelContextRepository(db);
   const connectorConfigService = new ConnectorConfigService(connectorConfigRepository);
   const connectorService = new ConnectorService(connectorConfigService);
   const feishuNotifier = new FeishuOutboundNotifier(connectorConfigService, {
     openBaseUrl: env.feishuOpenBaseUrl,
-    fetchImpl: options.fetchImpl
+    fetchImpl: options.fetchImpl,
+    idempotencyRepository
   });
   const codexLocalSessionService = env.codexLocalSessionsScanEnabled
     ? new CodexLocalSessionService({
@@ -75,6 +80,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     identityRepository: feishuIdentityRepository,
     fetchImpl: options.fetchImpl,
     openBaseUrl: env.feishuOpenBaseUrl
+  });
+  const codexModelCatalogService = new CodexModelCatalogService({
+    codexBin: env.codexCliBin
+  });
+  const feishuCommandPanelService = new FeishuCommandPanelService({
+    contextRepository: feishuPanelContextRepository,
+    codexLocalSessionService: codexLocalSessionService ?? undefined,
+    codexModelCatalogService,
+    codexAutoDispatchEnabled: env.codexAutoDispatchEnabled,
+    codexCliBin: env.codexCliBin
   });
   const feishuDirectoryService = new FeishuDirectoryService({
     messageRepository,
@@ -190,6 +205,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       codexDispatchService,
       feishuNotifier,
       feishuIdentityService,
+      feishuCommandPanelService,
       codexLocalSessionService: codexLocalSessionService ?? undefined
     }),
     feishuDirectoryService,

@@ -15,6 +15,7 @@ type FeishuBridgeLogger = Pick<Console, "info" | "warn" | "error">;
 
 type FeishuMessageHandlers = {
   "im.message.receive_v1": (event: Record<string, unknown>) => Promise<void>;
+  "card.action.trigger": (event: Record<string, unknown>) => Promise<void>;
 };
 
 type FeishuWsClientLike = {
@@ -91,6 +92,15 @@ export async function startFeishuWsBridge(options: FeishuWsBridgeOptions = {}): 
   const dispatcher = dispatcherFactory({
     "im.message.receive_v1": async (event: Record<string, unknown>) => {
       await forwardMessageEvent({
+        gatewayUrl,
+        fetchImpl,
+        verifyToken,
+        event,
+        logger
+      });
+    },
+    "card.action.trigger": async (event: Record<string, unknown>) => {
+      await forwardCardActionEvent({
         gatewayUrl,
         fetchImpl,
         verifyToken,
@@ -186,6 +196,71 @@ async function forwardMessageEvent(input: {
   }
 
   input.logger.info(`[feishu-ws] forwarded event ok body=${responseText || "<empty>"}`);
+}
+
+async function forwardCardActionEvent(input: {
+  gatewayUrl: string;
+  fetchImpl: typeof fetch;
+  verifyToken: string;
+  event: {
+    context?: {
+      open_message_id?: string;
+      open_chat_id?: string;
+    };
+    operator?: {
+      open_id?: string;
+      user_id?: string;
+      union_id?: string;
+      name?: string;
+    };
+    action?: {
+      tag?: string;
+      value?: unknown;
+      name?: string;
+      option?: string;
+    };
+    token?: string;
+    open_message_id?: string;
+    open_chat_id?: string;
+  };
+  logger: FeishuBridgeLogger;
+}) {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+  if (input.verifyToken) {
+    headers["x-lark-request-token"] = input.verifyToken;
+  }
+
+  const body = {
+    event: {
+      type: "card.action.trigger",
+      context: input.event.context,
+      operator: input.event.operator,
+      action: input.event.action,
+      token: input.event.token,
+      message: {
+        message_id: input.event.open_message_id || input.event.context?.open_message_id,
+        chat_id: input.event.open_chat_id || input.event.context?.open_chat_id
+      }
+    }
+  };
+
+  const response = await input.fetchImpl(`${input.gatewayUrl}/api/feishu/webhook`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body)
+  });
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    input.logger.error(
+      `[feishu-ws] forward card action failed status=${response.status} body=${responseText || "<empty>"}`
+    );
+    return;
+  }
+
+  input.logger.info(`[feishu-ws] forwarded card action ok body=${responseText || "<empty>"}`);
 }
 
 function createDefaultClientFactory(logger: FeishuBridgeLogger) {

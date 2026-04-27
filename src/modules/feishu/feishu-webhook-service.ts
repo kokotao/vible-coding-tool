@@ -7,10 +7,17 @@
 import { randomUUID } from "node:crypto";
 import { AppError } from "../../lib/errors";
 import {
+  buildFeishuCommandHelpCard,
+  buildFeishuCommandHelpPayload,
+  buildFeishuCommandHelpText,
+  isExplicitFeishuCommand,
   parseFeishuCommand,
   parseFeishuIdentityBindingCommand,
+  type ParsedCommand,
   type ParsedIdentityBindingCommand
 } from "./feishu-message-parser";
+import { type FeishuPanelCommand } from "./feishu-command-panel";
+import { FeishuCommandPanelService } from "./feishu-command-panel-service";
 import { evaluateRisk } from "../risk/risk-guard";
 import { CodexDispatchService } from "../codex/codex-dispatch-service";
 import { CodexLocalSessionService } from "../codex/codex-local-session-service";
@@ -35,6 +42,7 @@ type FeishuWebhookServiceDeps = {
   connectorConfigService: ConnectorConfigService;
   idempotencyRepository: IdempotencyRepository;
   feishuIdentityService: FeishuIdentityService;
+  feishuCommandPanelService?: FeishuCommandPanelService;
   codexDispatchService?: CodexDispatchService;
   feishuNotifier?: FeishuOutboundNotifier;
   codexLocalSessionService?: CodexLocalSessionService;
@@ -56,15 +64,292 @@ export class FeishuWebhookService {
       return this.handleIdentityBinding(message, bindingCommand);
     }
 
-    const parsed = parseFeishuCommand({
-      text: message.text,
-      senderId: message.senderId,
-      messageId: message.messageId
+    const panelCommand = this.deps.feishuCommandPanelService?.parseCommand(message.text);
+    if (panelCommand) {
+      return this.handlePanelCommand(message, panelCommand);
+    }
+
+    if (!isExplicitFeishuCommand(message.text)) {
+      const panelContext = this.deps.feishuCommandPanelService?.resolveDispatchContext(message.senderId);
+      const prompt = message.text.trim();
+      if (panelContext?.pendingComposeMode === "session_command") {
+        if (!prompt) {
+          return this.handleCommandGuidance(message, "ambiguous_command");
+        }
+
+        const parsed: ParsedCommand = {
+          sessionId: panelContext.selectedThreadId || null,
+          prompt,
+          threadAlias: null,
+          threadSelector: null,
+          sourcePlatform: "feishu",
+          senderId: message.senderId,
+          platformMessageId: message.messageId
+        };
+
+        return this.executeParsedCommand(message, parsed, panelContext.selectedModelSlug ?? null);
+      }
+
+      if (panelContext?.pendingComposeMode === "thread_command") {
+        if (!prompt) {
+          return this.handleCommandGuidance(message, "ambiguous_command");
+        }
+
+        if (!panelContext.selectedThreadId) {
+          return this.handleCommandGuidance(message, "thread_not_found");
+        }
+
+        const parsed: ParsedCommand = {
+          sessionId: panelContext.selectedThreadId,
+          prompt,
+          threadAlias: null,
+          threadSelector: panelContext.selectedThreadId,
+          sourcePlatform: "feishu",
+          senderId: message.senderId,
+          platformMessageId: message.messageId
+        };
+
+        return this.executeParsedCommand(message, parsed, panelContext.selectedModelSlug ?? null);
+      }
+
+      if (panelContext?.selectedThreadId) {
+        const parsed: ParsedCommand = {
+          sessionId: panelContext.selectedThreadId,
+          prompt,
+          threadAlias: null,
+          threadSelector: null,
+          sourcePlatform: "feishu",
+          senderId: message.senderId,
+          platformMessageId: message.messageId
+        };
+
+        return this.executeParsedCommand(message, parsed, panelContext.selectedModelSlug ?? null);
+      }
+
+      return this.handleCommandGuidance(message, "ambiguous_command");
+    }
+
+    let parsed: ParsedCommand;
+    try {
+      parsed = parseFeishuCommand({
+        text: message.text,
+        senderId: message.senderId,
+        messageId: message.messageId
+      });
+    } catch (error) {
+      if (error instanceof AppError && this.isCommandGuidanceError(error.code)) {
+        return this.handleCommandGuidance(message, this.mapCommandGuidanceReason(error.code));
+      }
+
+      throw error;
+    }
+
+    const panelContext = this.deps.feishuCommandPanelService?.resolveDispatchContext(message.senderId);
+    return this.executeParsedCommand(message, parsed, panelContext?.selectedModelSlug ?? null);
+  }
+
+  async handleCardAction(message: {
+    senderId: string;
+    messageId: string | null;
+    eventId: string | null;
+    action: { tag?: string; value?: unknown; name?: string; option?: string } | null;
+    context: { open_message_id?: string; open_chat_id?: string } | null;
+  }) {
+    const panelCommand = this.deps.feishuCommandPanelService?.parseAction(message.action?.value);
+    if (!panelCommand) {
+      return {
+        accepted: true,
+        ignored: true,
+        reason: "unsupported_card_action"
+      };
+    }
+
+    return this.handlePanelCommand(
+      {
+        senderId: message.senderId,
+        messageId: message.messageId,
+        eventId: message.eventId,
+        text: ""
+      },
+      panelCommand
+    );
+  }
+
+  private async handleIdentityBinding(
+    message: FeishuIncomingMessage,
+    bindingCommand: ParsedIdentityBindingCommand
+  ) {
+    const now = new Date().toISOString();
+    const idempotencyKey = `feishu:identity-bind:${message.messageId || message.eventId || message.senderId}`;
+    const isNewEvent = this.deps.idempotencyRepository.saveIfAbsent({
+      idempotencyKey,
+      scope: "feishu_webhook",
+      createdAt: now
     });
 
+    if (!isNewEvent) {
+      return {
+        accepted: true,
+        duplicate: true,
+        message: "Duplicate identity binding ignored"
+      };
+    }
+
+    const targetOpenId = bindingCommand.targetOpenId || message.senderId;
+    const identity = this.deps.feishuIdentityService.bindDisplayName({
+      openId: targetOpenId,
+      displayName: bindingCommand.displayName,
+      boundBy: message.senderId
+    });
+    if (!identity) {
+      throw new AppError("FEISHU_IDENTITY_BIND_FAILED", 500, "Failed to bind Feishu identity");
+    }
+
+    const notify = await this.notifyIdentityBinding({
+      senderId: message.senderId,
+      displayName: identity.displayName,
+      openId: identity.openId
+    });
+
+    await this.deps.auditLogRepository.create({
+      eventId: randomUUID(),
+      taskId: null,
+      sessionId: `feishu-identity-${identity.openId}`,
+      action: "feishu_identity_bind",
+      actorId: message.senderId,
+      result: notify.sent ? "success" : notify.skipped ? "skipped" : "failed",
+      detail: `openId=${identity.openId}; displayName=${identity.displayName}; bindingSource=${identity.bindingSource}`,
+      createdAt: now
+    });
+
+    return {
+      accepted: true,
+      message: `已绑定姓名：${identity.displayName}`,
+      identity: {
+        openId: identity.openId,
+        displayName: identity.displayName,
+        bindingSource: identity.bindingSource,
+        boundBy: identity.boundBy
+      },
+      targetOpenId,
+      notify
+    };
+  }
+
+  private async handleCommandGuidance(message: FeishuIncomingMessage, reason: string) {
+    const now = new Date().toISOString();
+    const idempotencyKey = `feishu:command-guidance:${message.messageId || message.eventId || message.senderId}`;
+    const isNewEvent = this.deps.idempotencyRepository.saveIfAbsent({
+      idempotencyKey,
+      scope: "feishu_webhook",
+      createdAt: now
+    });
+
+    if (!isNewEvent) {
+      return {
+        accepted: false,
+        skipped: true,
+        duplicate: true,
+        reason,
+        message: buildFeishuCommandHelpText(this.normalizeCommandGuidanceReason(reason)),
+        help: buildFeishuCommandHelpPayload(this.normalizeCommandGuidanceReason(reason))
+      };
+    }
+
+    const guidanceReason = this.normalizeCommandGuidanceReason(reason);
+    const notify = await this.notifyCommandGuidance({
+      senderId: message.senderId,
+      reason: guidanceReason
+    });
+
+    await this.deps.auditLogRepository.create({
+      eventId: randomUUID(),
+      taskId: null,
+      sessionId: `feishu-command-guidance-${message.senderId}`,
+      action: "feishu_command_guidance",
+      actorId: message.senderId,
+      result: this.normalizeNotifyResult(notify),
+      detail: `reason=${guidanceReason}; sent=${notify.sent}; skipped=${notify.skipped}; statusCode=${notify.statusCode ?? "null"}`,
+      createdAt: now
+    });
+
+    return {
+      accepted: false,
+      skipped: true,
+      reason,
+      message: buildFeishuCommandHelpText(guidanceReason),
+      help: buildFeishuCommandHelpPayload(guidanceReason),
+      notify
+    };
+  }
+
+  private async handlePanelCommand(message: FeishuIncomingMessage, command: FeishuPanelCommand) {
+    const panelService = this.deps.feishuCommandPanelService;
+    if (!panelService) {
+      return this.handleCommandGuidance(message, "ambiguous_command");
+    }
+
+    if (command.actionType === "help") {
+      return this.handleCommandGuidance(message, "ambiguous_command");
+    }
+
+    if (command.actionType === "start_task") {
+      const context = panelService.resolveDispatchContext(message.senderId);
+      if (!context.selectedThreadId) {
+        return this.handleCommandGuidance(message, "session_required");
+      }
+
+      const prompt = command.prompt.trim();
+      if (!prompt) {
+        return this.handleCommandGuidance(message, "ambiguous_command");
+      }
+
+      const parsed: ParsedCommand = {
+        sessionId: context.selectedThreadId,
+        prompt,
+        threadAlias: null,
+        threadSelector: null,
+        sourcePlatform: "feishu",
+        senderId: message.senderId,
+        platformMessageId: message.messageId
+      };
+
+      return this.executeParsedCommand(message, parsed, context.selectedModelSlug ?? null);
+    }
+
+    const result = await panelService.handlePanelCommand(message.senderId, command, true);
+    const notify = await this.notifyCard({
+      card: result.card,
+      recipientOpenId: message.senderId
+    });
+
+    return {
+      accepted: true,
+      command: command.actionType,
+      context: result.context,
+      notify
+    };
+  }
+
+  private async executeParsedCommand(message: FeishuIncomingMessage, parsed: ParsedCommand, selectedModelSlug: string | null) {
+    if (!parsed.prompt.trim()) {
+      return this.handleCommandGuidance(message, "ambiguous_command");
+    }
+
     const connectorConfig = this.deps.connectorConfigService.getConfig("feishu");
-    const sessionId = this.resolveSessionId(parsed.sessionId, parsed.senderId, connectorConfig.sessionPrefix);
-    const threadRef = this.resolveThreadRef(sessionId, parsed.threadSelector);
+    let sessionId: string;
+    let threadRef: string | null;
+    try {
+      sessionId = this.resolveSessionId(parsed.sessionId, parsed.senderId, connectorConfig.sessionPrefix);
+      threadRef = this.resolveThreadRef(sessionId, parsed.threadSelector);
+    } catch (error) {
+      if (error instanceof AppError && this.isCommandGuidanceError(error.code)) {
+        return this.handleCommandGuidance(message, this.mapCommandGuidanceReason(error.code));
+      }
+
+      throw error;
+    }
+
     const now = new Date().toISOString();
     const idempotencyKey = `feishu:webhook:${message.messageId || message.eventId || parsed.senderId}:${sessionId}`;
     const isNewEvent = this.deps.idempotencyRepository.saveIfAbsent({
@@ -160,7 +445,7 @@ export class FeishuWebhookService {
       action: "feishu_notify_status",
       actorId: parsed.senderId,
       result: this.normalizeNotifyResult(notify),
-      detail: `sent=${notify.sent}; skipped=${notify.skipped}; reason=${notify.reason || "null"}; statusCode=${notify.statusCode ?? "null"}; threadRef=${threadRef || "null"}`,
+      detail: `sent=${notify.sent}; skipped=${notify.skipped}; reason=${notify.reason || "null"}; statusCode=${notify.statusCode ?? "null"}; threadRef=${threadRef || "null"}; model=${selectedModelSlug || "null"}`,
       createdAt: now
     });
 
@@ -178,8 +463,11 @@ export class FeishuWebhookService {
             sessionId,
             prompt: parsed.prompt,
             actorId: parsed.senderId,
-            threadRef
+            threadRef,
+            modelSlug: selectedModelSlug
           });
+
+    this.deps.feishuCommandPanelService?.clearComposeMode(parsed.senderId);
 
     return {
       accepted: true,
@@ -199,65 +487,6 @@ export class FeishuWebhookService {
         : null,
       notify,
       dispatch
-    };
-  }
-
-  private async handleIdentityBinding(
-    message: FeishuIncomingMessage,
-    bindingCommand: ParsedIdentityBindingCommand
-  ) {
-    const now = new Date().toISOString();
-    const idempotencyKey = `feishu:identity-bind:${message.messageId || message.eventId || message.senderId}`;
-    const isNewEvent = this.deps.idempotencyRepository.saveIfAbsent({
-      idempotencyKey,
-      scope: "feishu_webhook",
-      createdAt: now
-    });
-
-    if (!isNewEvent) {
-      return {
-        accepted: true,
-        duplicate: true,
-        message: "Duplicate identity binding ignored"
-      };
-    }
-
-    const identity = this.deps.feishuIdentityService.bindDisplayName({
-      openId: message.senderId,
-      displayName: bindingCommand.displayName,
-      boundBy: message.senderId
-    });
-    if (!identity) {
-      throw new AppError("FEISHU_IDENTITY_BIND_FAILED", 500, "Failed to bind Feishu identity");
-    }
-
-    const notify = await this.notifyIdentityBinding({
-      senderId: message.senderId,
-      displayName: identity.displayName,
-      openId: identity.openId
-    });
-
-    await this.deps.auditLogRepository.create({
-      eventId: randomUUID(),
-      taskId: null,
-      sessionId: `feishu-identity-${identity.openId}`,
-      action: "feishu_identity_bind",
-      actorId: message.senderId,
-      result: notify.sent ? "success" : notify.skipped ? "skipped" : "failed",
-      detail: `openId=${identity.openId}; displayName=${identity.displayName}; bindingSource=${identity.bindingSource}`,
-      createdAt: now
-    });
-
-    return {
-      accepted: true,
-      message: `已绑定姓名：${identity.displayName}`,
-      identity: {
-        openId: identity.openId,
-        displayName: identity.displayName,
-        bindingSource: identity.bindingSource,
-        boundBy: identity.boundBy
-      },
-      notify
     };
   }
 
@@ -332,6 +561,7 @@ export class FeishuWebhookService {
     prompt: string;
     actorId: string;
     threadRef?: string | null;
+    modelSlug?: string | null;
   }) {
     if (!this.deps.codexDispatchService) {
       return {
@@ -343,7 +573,14 @@ export class FeishuWebhookService {
       };
     }
 
-    const result = this.deps.codexDispatchService.dispatchTask(input);
+    const result = this.deps.codexDispatchService.dispatchTask({
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      prompt: input.prompt,
+      actorId: input.actorId,
+      threadRef: input.threadRef ?? null,
+      modelSlug: input.modelSlug ?? null
+    });
     return {
       accepted: result.accepted,
       skipped: result.skipped,
@@ -376,6 +613,19 @@ export class FeishuWebhookService {
     return this.deps.feishuNotifier.notifyTaskStatus(input);
   }
 
+  private notifyCard(input: { card: string; recipientOpenId?: string | null }) {
+    if (!this.deps.feishuNotifier) {
+      return Promise.resolve({
+        sent: false,
+        skipped: true,
+        reason: "notifier_disabled",
+        statusCode: null
+      });
+    }
+
+    return this.deps.feishuNotifier.notifyCard(input);
+  }
+
   private notifyIdentityBinding(input: { senderId: string; displayName: string; openId: string }) {
     if (!this.deps.feishuNotifier) {
       return Promise.resolve({
@@ -392,6 +642,23 @@ export class FeishuWebhookService {
     });
   }
 
+  private notifyCommandGuidance(input: { senderId: string; reason: string }) {
+    if (!this.deps.feishuNotifier) {
+      return Promise.resolve({
+        sent: false,
+        skipped: true,
+        reason: "notifier_disabled",
+        statusCode: null
+      });
+    }
+
+    const normalizedReason = this.normalizeCommandGuidanceReason(input.reason);
+    return this.deps.feishuNotifier.notifyCard({
+      card: buildFeishuCommandHelpCard(normalizedReason),
+      recipientOpenId: input.senderId
+    });
+  }
+
   private normalizeNotifyResult(notify: { sent: boolean; skipped: boolean }) {
     if (notify.sent) {
       return "success";
@@ -402,5 +669,41 @@ export class FeishuWebhookService {
     }
 
     return "failed";
+  }
+
+  private isCommandGuidanceError(code: string) {
+    return code === "EMPTY_COMMAND" || code === "SESSION_REQUIRED" || code === "THREAD_NOT_FOUND" || code === "THREAD_SELECTOR_AMBIGUOUS";
+  }
+
+  private normalizeCommandGuidanceReason(reason: string): "ambiguous_command" | "session_required" | "thread_not_found" | "thread_selector_ambiguous" {
+    if (reason === "session_required") {
+      return "session_required";
+    }
+
+    if (reason === "thread_not_found") {
+      return "thread_not_found";
+    }
+
+    if (reason === "thread_selector_ambiguous") {
+      return "thread_selector_ambiguous";
+    }
+
+    return "ambiguous_command";
+  }
+
+  private mapCommandGuidanceReason(code: string) {
+    if (code === "SESSION_REQUIRED") {
+      return "session_required";
+    }
+
+    if (code === "THREAD_NOT_FOUND") {
+      return "thread_not_found";
+    }
+
+    if (code === "THREAD_SELECTOR_AMBIGUOUS") {
+      return "thread_selector_ambiguous";
+    }
+
+    return "ambiguous_command";
   }
 }

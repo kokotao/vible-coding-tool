@@ -14,6 +14,11 @@
 3. `npm run dev`
 4. 打开 `http://127.0.0.1:3000/health`
 
+说明：
+
+- `npm run dev` 会自动加载当前目录下的 `.env.local`、`.env`（按此顺序）
+- 已存在的系统环境变量优先级更高，不会被 `.env` 覆盖
+
 ## 飞书长连接模式（无需公网 webhook）
 
 1. 先启动网关：`npm run dev`
@@ -66,7 +71,47 @@ npm run codex:run -- --session feishu-codex-demo --title "修复登录接口" --
 - 首次对话若还未建立会话，可先发一次 `#session:<id> <任务>` 完成绑定
 - 网关会优先解析 `线程 ID` 字段中的完整 thread UUID；若只有简写前缀（例如 `019dca59-发布线程`），会在本机 `~/.codex/sessions` 扫描结果中做唯一匹配
 - 也支持直接粘贴 rollout 文件名：`线程 ID：rollout-2026-04-26T23-12-34-019dca59-78b8-7d10-88fd-b6f9b8a7c409.jsonl`
+- 如果消息没有明确指令格式，网关会先拦截并回一条指令提示，不会直接下发到 Codex
 - 高风险命令仍会进入确认流，确认后自动继续下发到 Codex 执行
+
+## 飞书指令面板（对话式连续选择）
+
+除了手动输入 `#session` / `线程 ID`，现在也支持对话式连续选择，建议按下面顺序使用：
+
+1. `查看项目`
+2. `选择项目：<项目名/路径/序号>`
+3. `选择session：<threadId/rollout名/前缀>`
+4. 直接发送任务内容，或 `开始任务：<任务内容>`
+
+可用指令：
+
+- `查看项目`
+- `查看session` / `查看会话`
+- `查看当前项目session` / `查看当前项目会话`
+- `查看模型列表`
+- `查看网关状态`
+- `当前选择`
+- `指令帮助`
+- `选择项目：<selector>`
+- `选择session：<selector>`
+- `选择模型：<selector>`
+- `开始任务：<任务内容>`
+- `在当前session继续：<任务内容>`
+- `会话指令`（可通过卡片按钮触发）
+- `线程定向`（可通过卡片按钮触发）
+
+说明：
+
+- 飞书卡片按钮点击（`card.action.trigger`）会进入同一套指令处理逻辑。
+- 点击 `会话指令` 按钮后，下一条文本会优先按会话指令模板路由（有已选 session 时可直接输入任务内容）。
+- 点击 `线程定向` 按钮后，下一条文本会优先按线程定向模板路由（有已选 session 时可直接输入任务内容）。
+- 点击 `当前项目会话` 按钮后，会基于当前已选项目直接刷新 session 列表，便于快速切换会话。
+- session 列表卡片支持 `上一页 / 下一页` 分页按钮，避免大列表刷屏（默认每页 8 条）。
+- session 列表卡片支持 `全部 / 最近24h / 最近7d` 快速筛选按钮，切换筛选会自动回到第 1 页。
+- 选中 `session` 后，普通文本会默认作为任务直接进入该 session，不需要每次再带参数。
+- 模型列表来源是本机 Codex CLI：`codex debug models`（网关会读取并缓存）。
+- 默认模型来自 `~/.codex/config.toml` 的 `model = "..."`。
+- 飞书卡片正文建议使用“纯文本分段”样式（例如 `【标题】` + 换行字段），避免依赖 `###`、`**` 这类在部分客户端不稳定的 Markdown 渲染。
 
 ## 本地会话扫描与年月日分类展示
 
@@ -105,6 +150,10 @@ npm run codex:watch -- --session feishu-codex-demo --recipientOpenId <你的open
   - `--pollMs 3000`
   - `--bootstrap tail|replay`
 - `--scanArchived true|false`
+
+调试接口：
+
+- `GET /api/debug/watcher`：查看 watcher 是否在线（`running`）与最近一次成功推送时间（`lastSuccessfulPostAt`）
 
 如果你不想让网关自动拉起 watcher，可以在环境变量里设：
 

@@ -22,6 +22,7 @@ export type DispatchTaskInput = {
   prompt: string;
   actorId: string;
   threadRef?: string | null;
+  modelSlug?: string | null;
 };
 
 export type DispatchTaskResult = {
@@ -46,6 +47,7 @@ export class CodexDispatchService {
   dispatchTask(input: DispatchTaskInput): DispatchTaskResult {
     const prompt = input.prompt.trim();
     const threadRef = this.resolveThreadRef(input.sessionId, input.threadRef);
+    const modelSlug = (input.modelSlug || "").trim() || null;
     if (!prompt) {
       return {
         accepted: false,
@@ -67,7 +69,7 @@ export class CodexDispatchService {
         command: []
       };
     }
-    const commandArgs = this.buildCommandArgs(prompt, threadRef);
+    const commandArgs = this.buildCommandArgs(prompt, threadRef, modelSlug);
     const command = [this.options.codexBin, ...commandArgs];
     const now = new Date().toISOString();
 
@@ -126,9 +128,9 @@ export class CodexDispatchService {
         action: "dispatch_task",
         actorId: input.actorId,
         result: "accepted",
-        detail: `pid=${child.pid ?? "unknown"}; thread=${threadRef || "new"}; cmd=${command.join(" ")}`,
-        createdAt: now
-      });
+          detail: `pid=${child.pid ?? "unknown"}; thread=${threadRef || "new"}; model=${modelSlug || "default"}; cmd=${command.join(" ")}`,
+          createdAt: now
+        });
 
       return {
         accepted: true,
@@ -170,10 +172,14 @@ export class CodexDispatchService {
     return null;
   }
 
-  private buildCommandArgs(prompt: string, threadRef: string | null) {
+  private buildCommandArgs(prompt: string, threadRef: string | null, modelSlug: string | null) {
     const args = ["exec", "--json"];
     if (this.options.skipGitRepoCheck) {
       args.push("--skip-git-repo-check");
+    }
+
+    if (modelSlug) {
+      args.push("--model", modelSlug);
     }
 
     if (threadRef) {

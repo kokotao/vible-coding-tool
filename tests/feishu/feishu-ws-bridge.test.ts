@@ -42,6 +42,7 @@ describe("feishu websocket bridge", () => {
         start: async ({ eventDispatcher }) => {
           const handlers = eventDispatcher as {
             "im.message.receive_v1": (event: Record<string, unknown>) => Promise<void>;
+            "card.action.trigger": (event: Record<string, unknown>) => Promise<void>;
           };
           const event = {
             message: {
@@ -57,6 +58,24 @@ describe("feishu websocket bridge", () => {
           };
           messages.push(event);
           await handlers["im.message.receive_v1"](event);
+
+          const actionEvent = {
+            context: {
+              open_message_id: "msg-002",
+              open_chat_id: "chat-001"
+            },
+            operator: {
+              open_id: "ou_test"
+            },
+            action: {
+              tag: "button",
+              value: {
+                panelAction: "view_projects"
+              }
+            }
+          };
+          messages.push(actionEvent);
+          await handlers["card.action.trigger"](actionEvent);
         },
         close: () => {
           messages.push({ closed: true });
@@ -66,10 +85,11 @@ describe("feishu websocket bridge", () => {
     });
 
     try {
-      expect(forwardedBodies).toHaveLength(1);
+      expect(forwardedBodies).toHaveLength(2);
       expect(forwardedBodies[0]).toContain("test-session");
       expect(forwardedBodies[0]).toContain("ou_test");
-      expect(messages).toHaveLength(1);
+      expect(forwardedBodies[1]).toContain("card.action.trigger");
+      expect(messages).toHaveLength(2);
     } finally {
       await handle.stop();
     }

@@ -28,6 +28,22 @@ type FeishuWebhookBody = {
       message_type?: string;
       content?: string;
     };
+    action?: {
+      tag?: string;
+      value?: unknown;
+      name?: string;
+      option?: string;
+    };
+    context?: {
+      open_message_id?: string;
+      open_chat_id?: string;
+    };
+    operator?: {
+      open_id?: string;
+      union_id?: string;
+      user_id?: string;
+      name?: string;
+    };
     sender?: {
       sender_id?: {
         open_id?: string;
@@ -126,14 +142,14 @@ export function registerFeishuRoutes(
     );
 
     const event = normalized.event;
-    if (!event || normalized.eventType !== "im.message.receive_v1") {
+    if (!event || (normalized.eventType !== "im.message.receive_v1" && normalized.eventType !== "card.action.trigger")) {
       return {
         accepted: true,
         ignored: true
       };
     }
 
-    if (event.message?.message_type !== "text") {
+    if (normalized.eventType === "im.message.receive_v1" && event.message?.message_type !== "text") {
       return {
         accepted: true,
         ignored: true,
@@ -141,7 +157,27 @@ export function registerFeishuRoutes(
       };
     }
 
-    const text = decodeFeishuMessageContent(event.message.content);
+    if (normalized.eventType === "card.action.trigger") {
+      const senderId = event.operator?.open_id || event.operator?.user_id || event.operator?.union_id || "unknown_sender";
+      return feishuWebhookService.handleCardAction({
+        senderId,
+        messageId: event.context?.open_message_id ?? null,
+        eventId: normalized.eventId,
+        action: event.action ?? null,
+        context: event.context ?? null
+      });
+    }
+
+    const message = event.message;
+    if (!message) {
+      return {
+        accepted: true,
+        ignored: true,
+        reason: "missing_message_payload"
+      };
+    }
+
+    const text = decodeFeishuMessageContent(message.content);
     const senderId =
       event.sender?.sender_id?.open_id ||
       event.sender?.sender_id?.user_id ||
@@ -150,7 +186,7 @@ export function registerFeishuRoutes(
 
     return feishuWebhookService.handleIncomingMessage({
       senderId,
-      messageId: event.message.message_id ?? null,
+      messageId: message.message_id ?? null,
       eventId: normalized.eventId,
       text
     });

@@ -6,6 +6,8 @@
  */
 import { ConnectorConfigService } from "../connectors/connector-config-service";
 import type { ConnectorConfigRecord } from "../../storage/repositories/connector-config-repository";
+import { IdempotencyRepository } from "../../storage/repositories/idempotency-repository";
+import { buildFeishuTaskStatusCard } from "../feishu/feishu-command-panel";
 
 export type FeishuNotifyResult = {
   sent: boolean;
@@ -32,16 +34,23 @@ type NotifyTextInput = {
   recipientOpenId?: string | null;
 };
 
+type NotifyCardInput = {
+  card: string;
+  recipientOpenId?: string | null;
+};
+
 type FeishuOutboundNotifierOptions = {
   timeoutMs?: number;
   openBaseUrl?: string;
   fetchImpl?: typeof fetch;
+  idempotencyRepository?: IdempotencyRepository;
 };
 
 export class FeishuOutboundNotifier {
   private readonly timeoutMs: number;
   private readonly openBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly idempotencyRepository: IdempotencyRepository | null;
   private tenantTokenCache:
     | {
         token: string;
@@ -53,6 +62,7 @@ export class FeishuOutboundNotifier {
     this.timeoutMs = options.timeoutMs ?? 6000;
     this.openBaseUrl = (options.openBaseUrl ?? "https://open.feishu.cn").replace(/\/+$/, "");
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.idempotencyRepository = options.idempotencyRepository ?? null;
   }
 
   async notifyTaskStatus(input: NotifyTaskStatusInput): Promise<FeishuNotifyResult> {
@@ -67,8 +77,25 @@ export class FeishuOutboundNotifier {
       };
     }
 
-    const text = this.buildTaskStatusText(config, input);
-    return this.dispatchText(config, text, input.recipientOpenId ?? null);
+    const duplicateResult = this.skipDuplicateTaskStatusNotification(input);
+    if (duplicateResult) {
+      return duplicateResult;
+    }
+
+    const renderedText = this.buildTaskStatusText(config, input);
+    const card = buildFeishuTaskStatusCard({
+      title: this.resolveTaskTitle(input),
+      statusLabel: this.resolveStatusLabel(input.status),
+      summary: input.summary,
+      detail: this.resolveDetail(input),
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      actorId: input.actorId,
+      threadRef: (input.threadRef || "").trim(),
+      threadAlias: (input.threadAlias || "").trim(),
+      renderedText
+    });
+    return this.dispatchCard(config, card, input.recipientOpenId ?? null);
   }
 
   async notifyText(input: NotifyTextInput): Promise<FeishuNotifyResult> {
@@ -86,6 +113,21 @@ export class FeishuOutboundNotifier {
     return this.dispatchText(config, input.text, input.recipientOpenId ?? null);
   }
 
+  async notifyCard(input: NotifyCardInput): Promise<FeishuNotifyResult> {
+    const config = this.connectorConfigService.getConfig("feishu");
+
+    if (!config.enabled) {
+      return {
+        sent: false,
+        skipped: true,
+        reason: "connector_disabled",
+        statusCode: null
+      };
+    }
+
+    return this.dispatchCard(config, input.card, input.recipientOpenId ?? null);
+  }
+
   private async dispatchText(config: ConnectorConfigRecord, text: string, recipientOpenId: string | null) {
     const callbackUrl = (config.callbackUrl || "").trim();
 
@@ -94,6 +136,46 @@ export class FeishuOutboundNotifier {
     }
 
     return this.postOpenApiText(config, text, recipientOpenId);
+  }
+
+  private async dispatchCard(config: ConnectorConfigRecord, cardContent: string, recipientOpenId: string | null) {
+    const callbackUrl = (config.callbackUrl || "").trim();
+
+    if (callbackUrl && this.isBotWebhook(callbackUrl) && !this.isLocalIngressPath(callbackUrl)) {
+      return this.postWebhookCard(callbackUrl, cardContent);
+    }
+
+    return this.postOpenApiCard(config, cardContent, recipientOpenId);
+  }
+
+  private skipDuplicateTaskStatusNotification(input: NotifyTaskStatusInput) {
+    if (!this.idempotencyRepository) {
+      return null;
+    }
+
+    const keyParts = [
+      "feishu:task-status",
+      input.taskId.trim(),
+      input.status.trim(),
+      (input.recipientOpenId || "").trim() || "broadcast"
+    ];
+    const idempotencyKey = keyParts.join(":");
+    const isNew = this.idempotencyRepository.saveIfAbsent({
+      idempotencyKey,
+      scope: "feishu_notify_status",
+      createdAt: new Date().toISOString()
+    });
+
+    if (isNew) {
+      return null;
+    }
+
+    return {
+      sent: false,
+      skipped: true,
+      reason: "duplicate_notification",
+      statusCode: null
+    } satisfies FeishuNotifyResult;
   }
 
   private isBotWebhook(url: string) {
@@ -124,6 +206,43 @@ export class FeishuOutboundNotifier {
         body: JSON.stringify({
           msg_type: "text",
           content: { text }
+        }),
+        signal: abortController.signal
+      });
+
+      return {
+        sent: response.ok,
+        skipped: false,
+        reason: response.ok ? null : "http_failed",
+        statusCode: response.status
+      };
+    } catch {
+      return {
+        sent: false,
+        skipped: false,
+        reason: "request_failed",
+        statusCode: null
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async postWebhookCard(webhookUrl: string, cardContent: string): Promise<FeishuNotifyResult> {
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => {
+      abortController.abort();
+    }, this.timeoutMs);
+
+    try {
+      const response = await this.fetchImpl(webhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          msg_type: "interactive",
+          card: JSON.parse(cardContent)
         }),
         signal: abortController.signal
       });
@@ -200,6 +319,83 @@ export class FeishuOutboundNotifier {
           content: JSON.stringify({
             text
           })
+        }),
+        signal: abortController.signal
+      });
+
+      const payload = (await response.json().catch(() => null)) as { code?: number } | null;
+      const success = response.ok && payload?.code === 0;
+
+      return {
+        sent: success,
+        skipped: false,
+        reason: success ? null : "api_send_failed",
+        statusCode: response.status
+      };
+    } catch {
+      return {
+        sent: false,
+        skipped: false,
+        reason: "request_failed",
+        statusCode: null
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async postOpenApiCard(
+    config: ConnectorConfigRecord,
+    cardContent: string,
+    recipientOpenId: string | null
+  ): Promise<FeishuNotifyResult> {
+    const appId = config.appId.trim();
+    const appSecret = config.appSecret.trim();
+
+    if (!appId || !appSecret) {
+      return {
+        sent: false,
+        skipped: true,
+        reason: "app_credentials_missing",
+        statusCode: null
+      };
+    }
+
+    if (!recipientOpenId) {
+      return {
+        sent: false,
+        skipped: true,
+        reason: "recipient_missing",
+        statusCode: null
+      };
+    }
+
+    const tokenResult = await this.fetchTenantAccessToken(appId, appSecret);
+    if (!tokenResult.ok || !tokenResult.token) {
+      return {
+        sent: false,
+        skipped: false,
+        reason: "auth_failed",
+        statusCode: tokenResult.statusCode
+      };
+    }
+
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => {
+      abortController.abort();
+    }, this.timeoutMs);
+
+    try {
+      const response = await this.fetchImpl(`${this.openBaseUrl}/open-apis/im/v1/messages?receive_id_type=open_id`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenResult.token}`
+        },
+        body: JSON.stringify({
+          receive_id: recipientOpenId,
+          msg_type: "interactive",
+          content: cardContent
         }),
         signal: abortController.signal
       });
@@ -435,14 +631,14 @@ export class FeishuOutboundNotifier {
   }
 
   private resolveDetail(input: NotifyTaskStatusInput) {
-    const explicit = (input.detail || "").trim();
+    const explicit = (input.detail || "").replace(/\u0000/g, "").trim();
     if (explicit) {
-      return this.limitText(explicit, 500);
+      return explicit;
     }
 
-    const summary = (input.summary || "").trim();
+    const summary = (input.summary || "").replace(/\u0000/g, "").trim();
     if (summary) {
-      return this.limitText(summary, 500);
+      return summary;
     }
 
     return "无";

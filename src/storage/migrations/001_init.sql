@@ -50,6 +50,21 @@ CREATE TABLE IF NOT EXISTS feishu_identity_bindings (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS feishu_panel_contexts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  open_id TEXT NOT NULL UNIQUE,
+  current_view TEXT NOT NULL,
+  selected_project_name TEXT,
+  selected_project_path TEXT,
+  selected_thread_id TEXT,
+  selected_session_title TEXT,
+  selected_model_slug TEXT,
+  selected_model_name TEXT,
+  pending_compose_mode TEXT,
+  last_action TEXT,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id TEXT NOT NULL UNIQUE,
