@@ -2,10 +2,49 @@
 
 一个用于连接 `Codex / Claude` 等 vibe coding 工具与飞书、QQ 机器人的双向网关服务。
 
+## 作者信息
+
+- 作者：Albert_Luo
+- 邮箱：480199976@qq.com
+- 更新日期：2026-04-28
+
 ## 当前进度
 
 - 已完成 `Task 1`：Fastify + TypeScript 服务骨架
 - 已完成 `Task 2`：SQLite 初始化与基础仓储层
+
+## 3 分钟快速安装（L0/L1/L2/L3）
+
+完整安装方案见：[项目安装流程设计（V1）](docs/plan/20260428083200407_项目安装流程设计.md)
+
+- `L0 基础依赖层（必做）`：执行 `npm run install:check`（自动按系统选择安装脚本）
+- `L1 网关运行层（必做）`：执行 `npm run dev`，访问 `http://127.0.0.1:3000/health`
+- `L2 飞书接入层（按需）`：在飞书后台启用长连接并订阅 `im.message.receive_v1`，执行 `npm run feishu:ws`
+- `L3 Codex 回推层（按需）`：执行 `npm run codex:run -- --session <session> --title "<title>" -- <你的命令>` 或 `npm run codex:watch -- --session <session> --recipientOpenId <open_id>`
+
+## 全局安装（同款 CLI 体验）
+
+安装后可直接执行短命令：`vct`
+
+```bash
+npm install -g @tauchun/viblect
+vct
+```
+
+本地仓库试用全局命令（不发布 npm）：
+
+```bash
+npm link
+vct
+```
+
+说明：
+
+- npm 包名与 scope 必须全小写，`@Tau/vibleCt` 这种包含大写的写法会被 npm 拒绝
+- 全局命令入口由 `package.json -> bin` 提供（当前支持 `vct`、`viblect`、`vible-gateway`）
+- 发布时会通过 `prepack` 自动构建 `dist`，确保全局 CLI 可运行
+- 发布时会执行 `prepublishOnly -> npm run publish:check`，自动拦截 `.env`、`data/`、`docs/`、`tests/` 等非发布文件进入 npm 包
+- Windows/macOS/Linux 都可使用该命令（前提：Node.js 和 npm 在 PATH 中）
 
 ## 本地运行
 
@@ -14,10 +53,53 @@
 3. `npm run dev`
 4. 打开 `http://127.0.0.1:3000/health`
 
+开发期热重载（可选）：
+
+5. `npm run dev:watch`（会监听文件变化；在 watch 终端按回车会触发重启）
+
+## 一键安装与健康检查
+
+跨平台统一命令（推荐）：
+
+```bash
+npm run install:check
+```
+
+系统专用命令：
+
+```bash
+# macOS / Linux
+bash scripts/install.sh
+```
+
+```powershell
+# Windows PowerShell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+```bat
+:: Windows CMD
+scripts\install.cmd
+```
+
+```powershell
+# Windows npm 脚本
+npm run install:check:win
+```
+
 说明：
 
-- `npm run dev` 会自动加载当前目录下的 `.env.local`、`.env`（按此顺序）
+- 自动补齐 `.env`（若不存在）
+- 自动执行 `npm install`
+- 自动启动临时 `dev` 进程并探活 `/health`
+- 验证完成后自动结束临时进程（如服务已在运行则直接复用）
+
+环境变量加载说明：
+
+- `npm run dev` / `npm run dev:watch` 都会自动加载当前目录下的 `.env.local`、`.env`（按此顺序）
 - 已存在的系统环境变量优先级更高，不会被 `.env` 覆盖
+- 默认采用“终端精简 + 文件落盘”日志策略，日志按天写入 `LOG_DIR/gateway-YYYY-MM-DD.log`（默认目录 `./logs`）
+- 自动清理超过 `LOG_RETENTION_DAYS` 的历史日志（默认保留 7 天）
 
 ## 飞书长连接模式（无需公网 webhook）
 
@@ -111,6 +193,32 @@ npm run codex:run -- --session feishu-codex-demo --title "修复登录接口" --
 - 选中 `session` 后，普通文本会默认作为任务直接进入该 session，不需要每次再带参数。
 - 模型列表来源是本机 Codex CLI：`codex debug models`（网关会读取并缓存）。
 - 默认模型来自 `~/.codex/config.toml` 的 `model = "..."`。
+
+## 飞书快捷指令与操作流程（推荐）
+
+第一次使用建议按下面顺序发消息：
+
+1. `绑定姓名：张三`
+2. `查看项目`
+3. `选择项目：vible-coding-Tool`
+4. `查看session`
+5. `选择session：<threadId>`
+6. `开始任务：<任务内容>`（或直接发送任务内容）
+
+线程直达（无需先选 session）：
+
+`线程 ID：<uuid>，任务内容：<任务内容>`
+
+常用查询：
+
+- `指令帮助`
+- `查看模型列表`
+- `查看网关状态`
+
+说明：
+
+- 运行 `npm run dev` 后的终端窗口只用于看日志，不接收业务指令。
+- 业务指令请发送到飞书机器人对话中。
 - 飞书卡片正文建议使用“纯文本分段”样式（例如 `【标题】` + 换行字段），避免依赖 `###`、`**` 这类在部分客户端不稳定的 Markdown 渲染。
 
 ## 本地会话扫描与年月日分类展示

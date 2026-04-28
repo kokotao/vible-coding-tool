@@ -12,6 +12,7 @@ import { MessageRepository } from "../../storage/repositories/message-repository
 import { SessionThreadRepository } from "../../storage/repositories/session-thread-repository";
 import { TaskRepository, type TaskRecord } from "../../storage/repositories/task-repository";
 import { ToolSessionRepository } from "../../storage/repositories/tool-session-repository";
+import type { TerminalEventStream } from "../../lib/terminal-event-stream";
 
 type CodexEventServiceDeps = {
   taskRepository: TaskRepository;
@@ -21,6 +22,7 @@ type CodexEventServiceDeps = {
   idempotencyRepository: IdempotencyRepository;
   sessionThreadRepository: SessionThreadRepository;
   feishuNotifier?: FeishuOutboundNotifier;
+  terminalEventStream?: TerminalEventStream;
 };
 
 export type CodexStatus = "running" | "succeeded" | "failed";
@@ -62,7 +64,8 @@ export class CodexEventService {
       }
     }
 
-    const task = this.findOrCreateTask(event, now);
+    const taskResolved = this.findOrCreateTask(event, now);
+    const task = taskResolved.task;
     const summary = this.resolveSummary(event, task);
     const finishedAt = this.resolveFinishedAt(event.status, now);
 
@@ -105,6 +108,24 @@ export class CodexEventService {
         createdAt: now,
         updatedAt: now
       });
+    }
+
+    if (!taskResolved.created && this.isDuplicateTerminalEvent(task, event.status, summary)) {
+      return {
+        accepted: true,
+        duplicate: true,
+        eventId: event.eventId ?? null,
+        taskId: updatedTask.taskId,
+        sessionId: updatedTask.sessionId,
+        status: updatedTask.status,
+        message: "Duplicate terminal codex event ignored",
+        notify: {
+          sent: false,
+          skipped: true,
+          reason: "duplicate_terminal_event",
+          statusCode: null
+        }
+      };
     }
 
     this.deps.messageRepository.create({
@@ -156,6 +177,16 @@ export class CodexEventService {
       createdAt: now
     });
 
+    if (event.status === "succeeded" || event.status === "failed") {
+      this.deps.terminalEventStream?.codexTaskCompleted({
+        status: event.status,
+        taskId: updatedTask.taskId,
+        sessionId: updatedTask.sessionId,
+        threadRef: resolvedThreadRef,
+        summary
+      });
+    }
+
     return {
       accepted: true,
       duplicate: false,
@@ -173,7 +204,20 @@ export class CodexEventService {
     if (normalizedTaskId) {
       const existing = this.deps.taskRepository.findByTaskId(normalizedTaskId);
       if (existing) {
-        return existing;
+        return {
+          task: existing,
+          created: false
+        };
+      }
+
+      if (this.isWatcherSyntheticTaskId(normalizedTaskId)) {
+        const aliasedTask = this.resolveAliasedTaskForWatcher(event.sessionId);
+        if (aliasedTask) {
+          return {
+            task: aliasedTask,
+            created: false
+          };
+        }
       }
 
       const summary = this.resolveSummary(event, null);
@@ -189,12 +233,18 @@ export class CodexEventService {
         finishedAt
       });
 
-      return created!;
+      return {
+        task: created!,
+        created: true
+      };
     }
 
     const latestBySession = this.deps.taskRepository.findManyBySessionId(event.sessionId, 1)[0];
     if (latestBySession) {
-      return latestBySession;
+      return {
+        task: latestBySession,
+        created: false
+      };
     }
 
     const taskId = randomUUID();
@@ -212,7 +262,10 @@ export class CodexEventService {
       finishedAt
     });
 
-    return created!;
+    return {
+      task: created!,
+      created: true
+    };
   }
 
   private resolveSummary(event: CodexInboundEvent, task: TaskRecord | null) {
@@ -226,6 +279,42 @@ export class CodexEventService {
     }
 
     return `Codex task status changed to ${event.status}`;
+  }
+
+  private isWatcherSyntheticTaskId(taskId: string) {
+    return taskId.trim().startsWith("codex-turn-");
+  }
+
+  private resolveAliasedTaskForWatcher(sessionId: string) {
+    const recentTasks = this.deps.taskRepository.findManyBySessionId(sessionId, 20);
+    const runningRealTask = recentTasks.find(
+      (candidate) => candidate.status === "running" && !this.isWatcherSyntheticTaskId(candidate.taskId)
+    );
+    if (runningRealTask) {
+      return runningRealTask;
+    }
+
+    return recentTasks.find((candidate) => !this.isWatcherSyntheticTaskId(candidate.taskId)) ?? null;
+  }
+
+  private isDuplicateTerminalEvent(task: TaskRecord, status: CodexStatus, summary: string) {
+    if (!this.isTerminalStatus(status)) {
+      return false;
+    }
+    if (task.status !== status) {
+      return false;
+    }
+
+    const existingSummary = (task.summary || "").trim();
+    const incomingSummary = (summary || "").trim();
+    if (!existingSummary || !incomingSummary) {
+      return true;
+    }
+    return existingSummary === incomingSummary;
+  }
+
+  private isTerminalStatus(status: string): status is "succeeded" | "failed" {
+    return status === "succeeded" || status === "failed";
   }
 
   private resolveFinishedAt(status: CodexStatus, now: string) {

@@ -202,6 +202,8 @@ describe("codex events api", () => {
       expect(outboundPayload.content).toContain("完成内容");
       expect(outboundPayload.content).toContain("all checks passed");
       expect(outboundPayload.content).toContain("-DETAIL-END-MARKER");
+      expect(outboundPayload.content).toContain("选择此会话");
+      expect(outboundPayload.content).toContain("\"panelAction\":\"select_session\"");
       expect(outboundPayload.content).not.toContain("任务标题：");
       expect(outboundPayload.content).not.toContain("完成内容：");
       expect((outboundPayload.content.match(/任务状态：/g) || []).length).toBe(1);
@@ -300,16 +302,136 @@ describe("codex events api", () => {
       expect(second.statusCode).toBe(200);
       expect(second.json()).toMatchObject({
         accepted: true,
-        duplicate: false,
+        duplicate: true,
         taskId: "task-codex-dup-001",
         sessionId: "codex-session-dup-001",
         status: "succeeded",
         notify: {
           sent: false,
           skipped: true,
-          reason: "duplicate_notification"
+          reason: "duplicate_terminal_event"
         }
       });
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("aliases watcher synthetic task to active task and suppresses second completion push", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    const sessions = new ToolSessionRepository(db);
+    const tasks = new TaskRepository(db);
+    const now = new Date("2026-04-28T04:21:35.000Z").toISOString();
+
+    sessions.create({
+      sessionId: "codex-session-watch-001",
+      toolProvider: "codex",
+      toolSessionRef: "019dd16e-afbd-7cc3-82e2-b2a1eb053108",
+      status: "running",
+      createdBy: "ou_target_user",
+      createdAt: now,
+      updatedAt: now
+    });
+
+    tasks.create({
+      taskId: "task-real-001",
+      sessionId: "codex-session-watch-001",
+      triggerMessageId: null,
+      taskType: "command",
+      status: "running",
+      summary: "initial running summary",
+      startedAt: now,
+      finishedAt: null
+    });
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const currentConfig = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...(currentConfig.json() as Record<string, unknown>),
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const watcherFirst = await app.inject({
+        method: "POST",
+        url: "/api/codex/events",
+        payload: {
+          eventId: "codex-watch-complete-019dd16e-afbd-7cc3-82e2-b2a1eb053108-019dd252-3b38-7533-9fc4-d8264774d3e6",
+          taskId: "codex-turn-019dd252-3b38-7533-9fc4-d8264774d3e6",
+          sessionId: "codex-session-watch-001",
+          toolSessionRef: "019dd16e-afbd-7cc3-82e2-b2a1eb053108",
+          status: "succeeded",
+          summary: "Codex任务完成：你好，在。要继续推进哪一步？",
+          senderId: "ou_target_user"
+        }
+      });
+
+      expect(watcherFirst.statusCode).toBe(200);
+      expect(watcherFirst.json()).toMatchObject({
+        accepted: true,
+        duplicate: false,
+        taskId: "task-real-001",
+        sessionId: "codex-session-watch-001",
+        status: "succeeded",
+        notify: {
+          sent: true,
+          skipped: false
+        }
+      });
+
+      const dispatcherSecond = await app.inject({
+        method: "POST",
+        url: "/api/codex/events",
+        payload: {
+          eventId: "codex-dispatch-close-evt-001",
+          taskId: "task-real-001",
+          sessionId: "codex-session-watch-001",
+          toolSessionRef: "019dd16e-afbd-7cc3-82e2-b2a1eb053108",
+          status: "succeeded",
+          summary: "Codex任务完成：你好，在。要继续推进哪一步？",
+          senderId: "codex_dispatcher"
+        }
+      });
+
+      expect(dispatcherSecond.statusCode).toBe(200);
+      expect(dispatcherSecond.json()).toMatchObject({
+        accepted: true,
+        duplicate: true,
+        taskId: "task-real-001",
+        sessionId: "codex-session-watch-001",
+        status: "succeeded",
+        notify: {
+          sent: false,
+          skipped: true,
+          reason: "duplicate_terminal_event"
+        }
+      });
+
+      expect(tasks.findByTaskId("codex-turn-019dd252-3b38-7533-9fc4-d8264774d3e6")).toBeUndefined();
       expect(mockOpenApi.messageBodies).toHaveLength(1);
     } finally {
       await app.close();
