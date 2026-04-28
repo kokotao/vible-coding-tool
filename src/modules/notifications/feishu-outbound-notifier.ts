@@ -7,7 +7,13 @@
 import { ConnectorConfigService } from "../connectors/connector-config-service";
 import type { ConnectorConfigRecord } from "../../storage/repositories/connector-config-repository";
 import { IdempotencyRepository } from "../../storage/repositories/idempotency-repository";
+import { FeishuIdentityRepository } from "../../storage/repositories/feishu-identity-repository";
 import { buildFeishuTaskStatusCard } from "../feishu/feishu-command-panel";
+import {
+  formatCodexTokenUsageBreakdown,
+  type CodexRuntimeMeta,
+  type CodexTokenUsageBreakdown
+} from "../codex/codex-runtime-meta";
 
 export type FeishuNotifyResult = {
   sent: boolean;
@@ -27,6 +33,7 @@ type NotifyTaskStatusInput = {
   recipientOpenId?: string | null;
   threadAlias?: string | null;
   threadRef?: string | null;
+  runtimeMeta?: CodexRuntimeMeta;
 };
 
 type NotifyTextInput = {
@@ -44,6 +51,7 @@ type FeishuOutboundNotifierOptions = {
   openBaseUrl?: string;
   fetchImpl?: typeof fetch;
   idempotencyRepository?: IdempotencyRepository;
+  feishuIdentityRepository?: FeishuIdentityRepository;
 };
 
 export class FeishuOutboundNotifier {
@@ -51,6 +59,7 @@ export class FeishuOutboundNotifier {
   private readonly openBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly idempotencyRepository: IdempotencyRepository | null;
+  private readonly feishuIdentityRepository: FeishuIdentityRepository | null;
   private tenantTokenCache:
     | {
         token: string;
@@ -63,6 +72,7 @@ export class FeishuOutboundNotifier {
     this.openBaseUrl = (options.openBaseUrl ?? "https://open.feishu.cn").replace(/\/+$/, "");
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.idempotencyRepository = options.idempotencyRepository ?? null;
+    this.feishuIdentityRepository = options.feishuIdentityRepository ?? null;
   }
 
   async notifyTaskStatus(input: NotifyTaskStatusInput): Promise<FeishuNotifyResult> {
@@ -91,9 +101,11 @@ export class FeishuOutboundNotifier {
       taskId: input.taskId,
       sessionId: input.sessionId,
       actorId: input.actorId,
+      actorLabel: this.resolveActorLabel(input.actorId),
       threadRef: (input.threadRef || "").trim(),
       threadAlias: (input.threadAlias || "").trim(),
-      renderedText
+      renderedText,
+      footerNote: this.buildRuntimeNote(input.runtimeMeta ?? null)
     });
     return this.dispatchCard(config, card, input.recipientOpenId ?? null);
   }
@@ -644,6 +656,20 @@ export class FeishuOutboundNotifier {
     return "无";
   }
 
+  private buildRuntimeNote(
+    runtimeMeta: CodexRuntimeMeta
+  ) {
+    const durationText = this.formatDuration(runtimeMeta?.durationMs ?? null);
+    const tokenText = this.formatNumber(runtimeMeta?.tokenUsage ?? runtimeMeta?.tokenUsageDetail?.totalTokens ?? null);
+    const modelText = (runtimeMeta?.modelSlug || "").trim() || "--";
+    const summaryLine = `该次任务耗时：${durationText} · 消耗 tokens：${tokenText} · 使用模型：${modelText}`;
+    const totalUsageLine = this.formatRuntimeTokenLine("累计明细", runtimeMeta?.tokenUsageDetail ?? null);
+    const lastUsageLine = this.formatRuntimeTokenLine("最近一次", runtimeMeta?.lastTokenUsageDetail ?? null);
+    const extraLines = [totalUsageLine, lastUsageLine].filter(Boolean);
+
+    return extraLines.length > 0 ? `${summaryLine}\n${extraLines.join("\n")}` : summaryLine;
+  }
+
   private buildStructuredText(input: {
     statusLabel: string;
     taskTitle: string;
@@ -671,6 +697,45 @@ export class FeishuOutboundNotifier {
     }
 
     return lines.join("\n");
+  }
+
+  private formatDuration(durationMs: number | null) {
+    if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 0) {
+      return "--";
+    }
+
+    const totalSeconds = Math.max(Math.round(durationMs / 1000), 0);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (hours > 0) {
+      return `${hours}时${minutes}分${seconds}秒`;
+    }
+    if (minutes > 0) {
+      return `${minutes}分${seconds}秒`;
+    }
+    return `${seconds}秒`;
+  }
+
+  private formatNumber(value: number | null | undefined) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      return "--";
+    }
+
+    return new Intl.NumberFormat("zh-CN").format(Math.round(value));
+  }
+
+  private formatRuntimeTokenLine(
+    label: string,
+    usage: CodexTokenUsageBreakdown | null
+  ) {
+    const formatted = formatCodexTokenUsageBreakdown(usage, (value) => this.formatNumber(value));
+    if (!formatted) {
+      return null;
+    }
+
+    return `${label}：${formatted}`;
   }
 
   private ensureThreadLine(rendered: string, input: NotifyTaskStatusInput) {
@@ -703,5 +768,28 @@ export class FeishuOutboundNotifier {
       return cleaned;
     }
     return `${cleaned.slice(0, maxLength - 3)}...`;
+  }
+
+  private resolveActorLabel(actorId: string) {
+    const normalizedActorId = (actorId || "").trim();
+    if (!normalizedActorId) {
+      return "未知";
+    }
+
+    if (!this.isFeishuOpenId(normalizedActorId)) {
+      return normalizedActorId;
+    }
+
+    const identity = this.feishuIdentityRepository?.findByOpenId(normalizedActorId);
+    const displayName = identity?.displayName?.trim();
+    if (displayName) {
+      return displayName;
+    }
+
+    return normalizedActorId;
+  }
+
+  private isFeishuOpenId(value: string) {
+    return /^ou_[a-zA-Z0-9_-]+$/.test(value);
   }
 }

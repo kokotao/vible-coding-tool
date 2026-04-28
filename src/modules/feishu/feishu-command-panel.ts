@@ -19,6 +19,7 @@ export type FeishuPanelCommand =
   | { actionType: "current_selection" }
   | { actionType: "compose_session_command" }
   | { actionType: "compose_thread_command" }
+  | { actionType: "compose_project_session_command" }
   | { actionType: "help" }
   | { actionType: "start_task"; prompt: string };
 
@@ -65,6 +66,7 @@ const PANEL_SELECT_MODEL_PATTERN = /^(选择|切换|使用)模型[：:]\s*(.+)$/
 const PANEL_START_TASK_PATTERN = /^(开始任务|继续|执行任务|在当前\s*session\s*继续)[：:]\s*(.+)$/i;
 const PANEL_COMPOSE_SESSION_PATTERN = /^(会话指令|会话模式|使用会话指令)$/i;
 const PANEL_COMPOSE_THREAD_PATTERN = /^(线程定向|线程模式|使用线程定向)$/i;
+const PANEL_COMPOSE_PROJECT_SESSION_PATTERN = /^(新建|创建)\s*(session|会话)$/i;
 const PANEL_VIEW_CURRENT_PROJECT_SESSIONS_PATTERN = /^(查看|列出|展示)?当前项目(session|会话|线程)(列表)?$/i;
 
 export function parseFeishuPanelCommand(text: string): FeishuPanelCommand | null {
@@ -127,6 +129,10 @@ export function parseFeishuPanelCommand(text: string): FeishuPanelCommand | null
 
   if (PANEL_COMPOSE_THREAD_PATTERN.test(rawText)) {
     return { actionType: "compose_thread_command" };
+  }
+
+  if (PANEL_COMPOSE_PROJECT_SESSION_PATTERN.test(rawText)) {
+    return { actionType: "compose_project_session_command" };
   }
 
   if (/^(指令帮助|帮助|help)$/i.test(rawText)) {
@@ -224,6 +230,10 @@ export function parseFeishuPanelActionValue(value: unknown): FeishuPanelCommand 
     return { actionType: "compose_thread_command" };
   }
 
+  if (actionType === "compose_project_session_command") {
+    return { actionType: "compose_project_session_command" };
+  }
+
   if (actionType === "help") {
     return { actionType: "help" };
   }
@@ -272,6 +282,7 @@ export function buildFeishuProjectListCard(input: {
         buildActionBlock([
           {
             text: "选择此项目",
+            type: "primary",
             value: {
               panelAction: "select_project",
               selector: project.projectPath,
@@ -284,7 +295,7 @@ export function buildFeishuProjectListCard(input: {
     });
   }
 
-  elements.push(buildBottomActionBlock());
+  elements.push(...buildBottomActionBlocks());
 
   return buildCard({
     title: "项目列表",
@@ -318,6 +329,15 @@ export function buildFeishuSessionListCard(input: {
     currentPage: input.currentPage,
     totalPages: input.totalPages
   });
+  const newSessionActionBlock = buildActionBlock([
+    {
+      text: "新建 session",
+      type: "primary",
+      value: {
+        panelAction: "compose_project_session_command"
+      }
+    }
+  ]);
   const startIndex = (input.currentPage - 1) * input.pageSize;
   const elements: Array<Record<string, unknown>> = [
     {
@@ -340,6 +360,16 @@ export function buildFeishuSessionListCard(input: {
     }
   ];
 
+  elements.push(newSessionActionBlock);
+  elements.push({
+    tag: "note",
+    elements: [
+      {
+        tag: "plain_text",
+        content: "点击新建 session 后，下一条消息会在当前项目下创建新的 Codex 会话。"
+      }
+    ]
+  });
   elements.push(buildActionBlock(filterButtons));
   if (paginationButtons.length > 0) {
     elements.push(buildActionBlock(paginationButtons));
@@ -368,6 +398,7 @@ export function buildFeishuSessionListCard(input: {
         buildActionBlock([
           {
             text: "选择此 session",
+            type: "primary",
             value: {
               panelAction: "select_session",
               selector: session.threadId,
@@ -382,7 +413,7 @@ export function buildFeishuSessionListCard(input: {
     });
   }
 
-  elements.push(buildBottomActionBlock());
+  elements.push(...buildBottomActionBlocks());
 
   return buildCard({
     title: "Session 列表",
@@ -426,6 +457,7 @@ export function buildFeishuModelListCard(input: {
         buildActionBlock([
           {
             text: "选择此模型",
+            type: "primary",
             value: {
               panelAction: "select_model",
               selector: model.slug,
@@ -438,7 +470,7 @@ export function buildFeishuModelListCard(input: {
     });
   }
 
-  elements.push(buildBottomActionBlock());
+  elements.push(...buildBottomActionBlocks());
 
   return buildCard({
     title: "模型列表",
@@ -483,7 +515,7 @@ export function buildFeishuGatewayStatusCard(input: {
         `模型：${status.selectedContext.selectedModelName || status.selectedContext.selectedModelSlug || "未选择"}`
       ].join("\n")
     },
-    buildBottomActionBlock()
+    ...buildBottomActionBlocks()
   ];
 
   return buildCard({
@@ -499,8 +531,18 @@ export function buildFeishuSelectionCard(input: {
   project?: FeishuPanelProjectSummary | null;
   session?: FeishuPanelSessionSummary | null;
   model?: CodexModelCatalogRecord | null;
+  notice?: string | null;
 }) {
-  const elements: Array<Record<string, unknown>> = [
+  const elements: Array<Record<string, unknown>> = [];
+
+  if (input.notice?.trim()) {
+    elements.push({
+      tag: "markdown",
+      content: `【提示】\n${input.notice.trim()}`
+    });
+  }
+
+  elements.push(
     {
       tag: "markdown",
       content: "【当前选择】\n这是你在飞书里的连续选择上下文。"
@@ -515,7 +557,7 @@ export function buildFeishuSelectionCard(input: {
         `最近动作：${input.context.lastAction || "无"}`
       ].join("\n")
     }
-  ];
+  );
 
   if (input.project) {
     elements.push({
@@ -555,7 +597,7 @@ export function buildFeishuSelectionCard(input: {
     });
   }
 
-  elements.push(buildBottomActionBlock());
+  elements.push(...buildBottomActionBlocks());
 
   return buildCard({
     title: "当前选择",
@@ -567,12 +609,27 @@ export function buildFeishuSelectionCard(input: {
 
 export function buildFeishuComposeGuideCard(input: {
   context: FeishuPanelContextRecord;
-  mode: "session_command" | "thread_command";
+  mode: "session_command" | "thread_command" | "project_session_command";
 }) {
   const hasSelectedSession = Boolean(input.context.selectedThreadId);
   const selectedSession = input.context.selectedSessionTitle || input.context.selectedThreadId || "未选择";
+  const hasSelectedProject = Boolean(input.context.selectedProjectPath);
+  const selectedProject = input.context.selectedProjectName || input.context.selectedProjectPath || "未选择";
   const autoRouteGuide =
-    input.mode === "session_command"
+    input.mode === "project_session_command"
+      ? hasSelectedProject
+        ? [
+            "【下一步】",
+            `当前已选项目：${selectedProject}`,
+            "下一条消息直接输入任务内容即可，我会在当前项目下创建新的 Codex 会话。",
+            "提示：这不会复用已有 session。"
+          ].join("\n")
+        : [
+            "【下一步】",
+            "未选中项目，请先选择项目，再点击“新建 session”。",
+            "模板：查看项目 -> 选择项目 -> 新建 session"
+          ].join("\n")
+      : input.mode === "session_command"
       ? hasSelectedSession
         ? [
             "【下一步】",
@@ -599,15 +656,25 @@ export function buildFeishuComposeGuideCard(input: {
           ].join("\n");
 
   return buildCard({
-    title: input.mode === "session_command" ? "会话指令模式已开启" : "线程定向模式已开启",
-    template: input.mode === "session_command" ? "blue" : "turquoise",
+    title:
+      input.mode === "session_command"
+        ? "会话指令模式已开启"
+        : input.mode === "project_session_command"
+          ? "新建 session 模式已开启"
+          : "线程定向模式已开启",
+    template:
+      input.mode === "session_command"
+        ? "blue"
+        : input.mode === "project_session_command"
+          ? "green"
+          : "turquoise",
     intro: "已进入任务输入模式，下一条文本会优先按你选择的模板路由。",
     elements: [
       {
         tag: "markdown",
         content: [
           "【当前选择】",
-          `项目：${input.context.selectedProjectName || "未选择"}`,
+          `项目：${selectedProject}`,
           `session：${selectedSession}`,
           `模型：${input.context.selectedModelName || input.context.selectedModelSlug || "未选择"}`
         ].join("\n")
@@ -616,7 +683,7 @@ export function buildFeishuComposeGuideCard(input: {
         tag: "markdown",
         content: autoRouteGuide
       },
-      buildBottomActionBlock()
+      ...buildBottomActionBlocks()
     ]
   });
 }
@@ -629,12 +696,31 @@ export function buildFeishuTaskStatusCard(input: {
   taskId: string;
   sessionId: string;
   actorId: string;
+  actorLabel?: string;
   threadRef: string;
   threadAlias: string;
   renderedText: string;
+  footerNote?: string | null;
 }) {
   const detailLabel = input.statusLabel === "进行中" || input.statusLabel === "待确认" ? "任务内容" : "完成内容";
   const previewText = resolveTaskCardPreviewText(input);
+  const sessionSelector = resolveTaskCardSessionSelector(input);
+  const sessionActionBlock = sessionSelector
+    ? buildActionBlock([
+        {
+          text: "选择此会话",
+          type: "primary",
+          value: {
+            panelAction: "select_session",
+            selector: sessionSelector,
+            threadId: sessionSelector,
+            threadRef: input.threadRef || "",
+            sessionId: input.sessionId
+          }
+        }
+      ])
+    : null;
+  const runtimeNoteBlock = buildTaskRuntimeNoteBlock(input.footerNote);
   return buildCard({
     title: `${input.statusLabel} · ${truncate(input.title, 28)}`,
     template: input.statusLabel === "失败" ? "red" : input.statusLabel === "成功" ? "green" : "blue",
@@ -653,10 +739,10 @@ export function buildFeishuTaskStatusCard(input: {
         tag: "markdown",
         content: [
           "【任务元信息】",
-          `任务ID：${input.taskId}`,
-          `会话ID：${input.sessionId}`,
-          `触发方：${input.actorId}`,
-          `线程：${input.threadAlias || input.threadRef || "无"}`
+          `任务ID：${shortenMetaIdentifier(input.taskId)}`,
+          `会话ID：${shortenMetaIdentifier(input.sessionId)}`,
+          `触发方：${resolveTaskCardActorLabel(input.actorLabel, input.actorId)}`,
+          `线程ID：${resolveTaskCardThreadLabel(input.threadAlias, input.threadRef)}`
         ].join("\n")
       },
       {
@@ -666,7 +752,9 @@ export function buildFeishuTaskStatusCard(input: {
           `${normalizeCardText(input.detail || input.summary || "无")}`
         ].join("\n")
       },
-      buildBottomActionBlock()
+      ...(sessionActionBlock ? [sessionActionBlock] : []),
+      ...buildBottomActionBlocks(),
+      ...(runtimeNoteBlock ? [runtimeNoteBlock] : [])
     ]
   });
 }
@@ -732,7 +820,7 @@ function buildActionBlock(buttons: Array<{ text: string; value: Record<string, u
     layout: "flow",
     actions: buttons.map((button) => ({
       tag: "button",
-      type: button.type ?? "primary",
+      type: button.type ?? "default",
       text: {
         tag: "plain_text",
         content: button.text
@@ -742,41 +830,75 @@ function buildActionBlock(buttons: Array<{ text: string; value: Record<string, u
   };
 }
 
-function buildBottomActionBlock() {
-  return buildActionBlock([
-    {
-      text: "查看项目",
-      value: { panelAction: "view_projects" }
-    },
-    {
-      text: "查看模型列表",
-      value: { panelAction: "view_models" }
-    },
-    {
-      text: "网关状态",
-      value: { panelAction: "view_gateway_status" }
-    },
-    {
-      text: "当前选择",
-      value: { panelAction: "current_selection" }
-    },
-    {
-      text: "当前项目会话",
-      value: { panelAction: "view_project_sessions" }
-    },
-    {
-      text: "会话指令",
-      value: { panelAction: "compose_session_command" }
-    },
-    {
-      text: "线程定向",
-      value: { panelAction: "compose_thread_command" }
-    },
-    {
-      text: "帮助",
-      value: { panelAction: "help" }
-    }
-  ]);
+function buildBottomActionBlocks() {
+  return [
+    buildActionBlock([
+      {
+        text: "查看项目",
+        type: "default",
+        value: { panelAction: "view_projects" }
+      },
+      {
+        text: "当前项目会话",
+        type: "default",
+        value: { panelAction: "view_project_sessions" }
+      },
+      {
+        text: "新建 session",
+        type: "primary",
+        value: { panelAction: "compose_project_session_command" }
+      },
+      {
+        text: "会话指令",
+        type: "default",
+        value: { panelAction: "compose_session_command" }
+      }
+    ]),
+    buildActionBlock([
+      {
+        text: "查看模型列表",
+        type: "default",
+        value: { panelAction: "view_models" }
+      },
+      {
+        text: "网关状态",
+        type: "default",
+        value: { panelAction: "view_gateway_status" }
+      },
+      {
+        text: "当前选择",
+        type: "default",
+        value: { panelAction: "current_selection" }
+      },
+      {
+        text: "线程定向",
+        type: "default",
+        value: { panelAction: "compose_thread_command" }
+      },
+      {
+        text: "帮助",
+        type: "default",
+        value: { panelAction: "help" }
+      }
+    ])
+  ];
+}
+
+function buildTaskRuntimeNoteBlock(note: string | null | undefined) {
+  const content = (note || "").trim();
+  if (!content) {
+    return null;
+  }
+
+  return {
+    tag: "note",
+    elements: [
+      {
+        tag: "plain_text",
+        content
+      }
+    ]
+  };
 }
 
 function buildSessionWindowButtons(input: {
@@ -862,6 +984,10 @@ function formatComposeModeLabel(mode: FeishuPanelContextRecord["pendingComposeMo
     return "会话指令";
   }
 
+  if (mode === "project_session_command") {
+    return "新建 session";
+  }
+
   if (mode === "thread_command") {
     return "线程定向";
   }
@@ -889,6 +1015,25 @@ function resolveTaskCardPreviewText(input: {
   return truncate(cleaned, 240);
 }
 
+function resolveTaskCardSessionSelector(input: {
+  sessionId: string;
+  threadRef: string;
+  threadAlias: string;
+}) {
+  const threadRef = (input.threadRef || "").trim();
+  if (threadRef) {
+    return threadRef;
+  }
+
+  const threadAlias = (input.threadAlias || "").trim();
+  if (threadAlias) {
+    return threadAlias;
+  }
+
+  const sessionId = (input.sessionId || "").trim();
+  return sessionId || "";
+}
+
 function sanitizeRenderedStatusText(
   renderedText: string,
   context: {
@@ -907,7 +1052,7 @@ function sanitizeRenderedStatusText(
   const detail = (context.detail || "").trim();
   const ignoredLinePatterns = [
     /^【(任务标题|任务元信息|任务内容|完成内容)】$/,
-    /^(任务状态|任务标题|任务ID|会话ID|触发方|线程(?:\s*ID)?|任务内容|完成内容)[：:]/
+    /^(任务状态|任务标题|任务ID|会话ID|触发方|线程(?:\s*ID)?|线程ID|任务内容|完成内容)[：:]/
   ];
 
   const keptLines: string[] = [];
@@ -933,6 +1078,53 @@ function sanitizeRenderedStatusText(
   }
 
   return keptLines.join("；");
+}
+
+function resolveTaskCardActorLabel(actorLabel: string | undefined, actorId: string) {
+  const preferred = (actorLabel || "").trim();
+  if (preferred) {
+    return preferred;
+  }
+
+  const normalizedActorId = (actorId || "").trim();
+  return normalizedActorId || "未知";
+}
+
+function resolveTaskCardThreadLabel(threadAlias: string, threadRef: string) {
+  const normalizedAlias = (threadAlias || "").trim();
+  if (normalizedAlias) {
+    return shortenMetaIdentifier(normalizedAlias);
+  }
+
+  const normalizedThreadRef = (threadRef || "").trim();
+  if (normalizedThreadRef) {
+    return shortenMetaIdentifier(normalizedThreadRef);
+  }
+
+  return "无";
+}
+
+function shortenMetaIdentifier(value: string) {
+  const normalized = (value || "").trim();
+  if (!normalized) {
+    return "无";
+  }
+
+  const uuidLikeMatched = normalized.match(/^([0-9a-fA-F]{8})-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/);
+  if (uuidLikeMatched) {
+    return uuidLikeMatched[1];
+  }
+
+  if (normalized.length <= 20) {
+    return normalized;
+  }
+
+  const prefixMatched = normalized.match(/^([0-9a-zA-Z]{8,})[-_][0-9a-zA-Z_-]+$/);
+  if (prefixMatched) {
+    return prefixMatched[1].slice(0, 8);
+  }
+
+  return normalized.slice(0, 8);
 }
 
 function truncate(value: string, maxLength: number) {

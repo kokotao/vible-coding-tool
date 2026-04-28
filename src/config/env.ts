@@ -4,6 +4,8 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().min(1).default("127.0.0.1"),
   LOG_LEVEL: z.string().min(1).default("info"),
+  LOG_DIR: z.string().min(1).default("./logs"),
+  LOG_RETENTION_DAYS: z.coerce.number().int().positive().min(1).max(365).default(7),
   DATABASE_PATH: z.string().min(1).default("./data/gateway.db"),
   CODEX_INGRESS_TOKEN: z.string().optional(),
   CODEX_INGRESS_SIGNING_SECRET: z.string().optional(),
@@ -36,6 +38,8 @@ export type AppEnv = {
   port: number;
   host: string;
   logLevel: string;
+  logDir: string;
+  logRetentionDays: number;
   databasePath: string;
   codexIngressToken: string | undefined;
   codexIngressSigningSecret: string | undefined;
@@ -59,6 +63,8 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     port: parsed.PORT,
     host: parsed.HOST,
     logLevel: parsed.LOG_LEVEL,
+    logDir: parsed.LOG_DIR,
+    logRetentionDays: parsed.LOG_RETENTION_DAYS,
     databasePath: parsed.DATABASE_PATH,
     codexIngressToken: parsed.CODEX_INGRESS_TOKEN,
     codexIngressSigningSecret: parsed.CODEX_INGRESS_SIGNING_SECRET,

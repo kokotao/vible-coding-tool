@@ -1,8 +1,14 @@
 const appRoot = document.getElementById("app");
 const drawerRoot = document.getElementById("drawer-root");
 const toastRoot = document.getElementById("toast-root");
+const wizardRoot = document.getElementById("wizard-root");
 let dashboardRefreshTimer = null;
 let dashboardRefreshInFlight = false;
+let localSessionsRefreshTimer = null;
+let localSessionsRefreshInFlight = false;
+let localSessionsRefreshRequestId = 0;
+let startupDrawerApplied = false;
+let startupSetupWizardApplied = false;
 
 const state = {
   dashboard: null,
@@ -22,10 +28,20 @@ const state = {
   connectorConfigs: {},
   drawer: {
     open: false,
+    mode: null,
     platform: null,
     activeTab: "connection",
     config: null,
-    recentOpenIds: []
+    recentOpenIds: [],
+    systemStatus: null,
+    systemDraft: {
+      apiBaseUrl: "",
+      apiKey: ""
+    }
+  },
+  setupWizard: {
+    open: false,
+    status: null
   }
 };
 
@@ -155,9 +171,10 @@ async function loadCodexOverview() {
   }
 }
 
-async function loadCodexLocalSessions() {
+async function loadCodexLocalSessions(options = {}) {
+  const refresh = options.refresh === true;
   try {
-    return await fetchJson("/api/codex/local-sessions?limit=500&refresh=true");
+    return await fetchJson(`/api/codex/local-sessions?limit=500${refresh ? "&refresh=true" : ""}`);
   } catch (error) {
     return {
       groups: [],
@@ -169,12 +186,15 @@ async function loadCodexLocalSessions() {
   }
 }
 
-async function loadLocalSessionDetail(threadId) {
-  return await fetchJson(`/api/codex/local-sessions/${encodeURIComponent(threadId)}?refresh=true`);
+async function loadLocalSessionDetail(threadId, options = {}) {
+  const refresh = options.refresh === true;
+  return await fetchJson(`/api/codex/local-sessions/${encodeURIComponent(threadId)}${refresh ? "?refresh=true" : ""}`);
 }
 
-async function loadLocalSessionsPage(threadId = null) {
-  state.codexLocalSessions = await loadCodexLocalSessions();
+async function loadLocalSessionsPage(threadId = null, options = {}) {
+  const refreshSnapshot = options.refreshSnapshot === true;
+  const refreshDetail = options.refreshDetail !== false;
+  state.codexLocalSessions = await loadCodexLocalSessions({ refresh: refreshSnapshot });
   state.localSessionsPage.loadError = null;
   state.localSessionsPage.sessionPage = 1;
 
@@ -187,23 +207,97 @@ async function loadLocalSessionsPage(threadId = null) {
   state.localSessionsPage.detail = null;
 
   if (state.localSessionsPage.selectedThreadId) {
-    await refreshLocalSessionDetail(state.localSessionsPage.selectedThreadId);
+    await refreshLocalSessionDetail(state.localSessionsPage.selectedThreadId, { refresh: refreshDetail });
   }
 }
 
-async function refreshLocalSessionDetail(threadId) {
-  if (!threadId) {
-    state.localSessionsPage.detail = null;
+function syncLocalSessionDetailToSnapshot(detail) {
+  if (!state.codexLocalSessions || !detail) {
     return;
   }
 
+  state.codexLocalSessions = {
+    ...state.codexLocalSessions,
+    items: (state.codexLocalSessions.items || []).map((item) =>
+      item.threadId === detail.threadId ? { ...item, ...detail } : item
+    )
+  };
+}
+
+async function refreshLocalSessionDetail(threadId, options = {}) {
+  const requestId = ++localSessionsRefreshRequestId;
+  const refresh = options.refresh === true;
+  const updateSnapshot = options.updateSnapshot !== false;
+  if (!threadId) {
+    state.localSessionsPage.detail = null;
+    return null;
+  }
+
   try {
-    state.localSessionsPage.detail = await loadLocalSessionDetail(threadId);
+    const detail = await loadLocalSessionDetail(threadId, { refresh });
+    if (
+      requestId !== localSessionsRefreshRequestId ||
+      route().name !== "localSessions" ||
+      state.localSessionsPage.selectedThreadId !== threadId
+    ) {
+      return null;
+    }
+    state.localSessionsPage.detail = detail;
     state.localSessionsPage.loadError = null;
+    if (updateSnapshot) {
+      syncLocalSessionDetailToSnapshot(detail);
+    }
+    return detail;
   } catch (error) {
+    if (requestId !== localSessionsRefreshRequestId) {
+      return null;
+    }
     state.localSessionsPage.detail = null;
     state.localSessionsPage.loadError = error.message || "Local session detail unavailable";
+    return null;
   }
+}
+
+function stopLocalSessionsRefresh() {
+  if (!localSessionsRefreshTimer) {
+    return;
+  }
+
+  clearInterval(localSessionsRefreshTimer);
+  localSessionsRefreshTimer = null;
+}
+
+function startLocalSessionsRefresh() {
+  if (localSessionsRefreshTimer) {
+    return;
+  }
+
+  localSessionsRefreshTimer = window.setInterval(() => {
+    if (route().name !== "localSessions" || localSessionsRefreshInFlight) {
+      return;
+    }
+
+    const threadId = state.localSessionsPage.selectedThreadId;
+    if (!threadId) {
+      return;
+    }
+
+    localSessionsRefreshInFlight = true;
+    void refreshLocalSessionDetail(threadId, { refresh: true })
+      .then((detail) => {
+        if (!detail || route().name !== "localSessions" || state.localSessionsPage.selectedThreadId !== threadId) {
+          return;
+        }
+        renderLocalSessionsPage();
+        bindLocalSessionsEvents();
+      })
+      .catch(() => {
+        // 保持当前页面内容不变，下一轮继续尝试。
+      })
+      .finally(() => {
+        localSessionsRefreshInFlight = false;
+      });
+  }, 10000);
 }
 
 async function loadConnectorConfig(platform) {
@@ -215,6 +309,54 @@ async function loadConnectorConfig(platform) {
 async function loadRecentFeishuOpenIds(limit = 20) {
   const response = await fetchJson(`/api/feishu/open-ids/recent?limit=${encodeURIComponent(limit)}`);
   return response.items || [];
+}
+
+async function loadSystemCodexStatus() {
+  return await fetchJson("/api/system/codex-cli/status");
+}
+
+function isSetupWizardRequired(status) {
+  if (!status) {
+    return false;
+  }
+  if (status.setupWizard && typeof status.setupWizard.required === "boolean") {
+    return status.setupWizard.required;
+  }
+  const apiReady = Boolean(status.apiConfig?.baseUrl) && Boolean(status.apiConfig?.keyConfigured);
+  return !status.installed || !apiReady || !status.projectAuthorization?.trustedInConfig;
+}
+
+function setupWizardDismissKey(status) {
+  const projectRoot = status?.projectRoot || "default_project";
+  return `vct.setupWizard.dismissed.${projectRoot}`;
+}
+
+function setupWizardFingerprint(status) {
+  const reasons = status?.setupWizard?.reasons || [];
+  return Array.isArray(reasons) ? reasons.join(",") : "";
+}
+
+function markSetupWizardDismissed(status) {
+  try {
+    const key = setupWizardDismissKey(status);
+    const fingerprint = setupWizardFingerprint(status);
+    localStorage.setItem(key, fingerprint || "dismissed");
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function shouldSkipSetupWizardByDismiss(status) {
+  if (isSetupWizardRequired(status)) {
+    return false;
+  }
+  try {
+    const key = setupWizardDismissKey(status);
+    const expected = setupWizardFingerprint(status) || "dismissed";
+    return localStorage.getItem(key) === expected;
+  } catch {
+    return false;
+  }
 }
 
 function renderShell(title, subtitle, actionsHtml, contentHtml) {
@@ -690,6 +832,7 @@ function renderDashboardPage() {
           <div class="mc-quick-links">
             <a href="#/" class="mc-nav-chip active">首页总览</a>
             <a href="#/local-sessions" class="mc-nav-chip">本地会话页</a>
+            <button type="button" class="mc-nav-chip" data-open-system-config="true">系统配置</button>
             <a href="/health" class="mc-nav-chip">健康检查</a>
           </div>
         </div>
@@ -1168,10 +1311,11 @@ function renderLocalSessionsPage() {
         <div class="lsw-chat-title">
           <h2>${escapeHtml(detail.sessionTitle)}</h2>
           <p>${renderLocalIcon("folder")} ${escapeHtml(detail.projectName)} · ${escapeHtml(detail.messageCount)} 条消息 · ${escapeHtml(
-      detail.rolloutFileName
-    )}</p>
+            detail.rolloutFileName
+          )}</p>
         </div>
         <div class="lsw-chat-actions">
+          <button class="lsw-info-btn" type="button" data-refresh-local-session-detail="true">${renderLocalIcon("refresh")} 刷新当前对话</button>
           <button class="lsw-icon-btn" type="button" title="复制">${renderLocalIcon("copy")}</button>
           <button class="lsw-icon-btn" type="button" title="分享">${renderLocalIcon("share")}</button>
           <button class="lsw-icon-btn" type="button" title="下载">${renderLocalIcon("download")}</button>
@@ -1543,6 +1687,12 @@ function bindDashboardEvents() {
     });
   });
 
+  appRoot.querySelectorAll("[data-open-system-config]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await openSystemConfigDrawer();
+    });
+  });
+
   appRoot.querySelectorAll("[data-stop-task]").forEach((button) => {
     button.addEventListener("click", async () => {
       const taskId = button.getAttribute("data-stop-task");
@@ -1591,10 +1741,34 @@ function bindLocalSessionsEvents() {
     button.addEventListener("click", async () => {
       button.disabled = true;
       try {
-        await loadLocalSessionsPage(state.localSessionsPage.selectedThreadId);
+        await loadLocalSessionsPage(state.localSessionsPage.selectedThreadId, {
+          refreshSnapshot: true,
+          refreshDetail: true
+        });
         renderLocalSessionsPage();
         bindLocalSessionsEvents();
         showToast("本地会话目录已刷新", "success");
+      } catch (error) {
+        showToast(error.message, "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  appRoot.querySelectorAll("[data-refresh-local-session-detail]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const threadId = state.localSessionsPage.selectedThreadId;
+      if (!threadId) {
+        return;
+      }
+
+      button.disabled = true;
+      try {
+        await refreshLocalSessionDetail(threadId, { refresh: true });
+        renderLocalSessionsPage();
+        bindLocalSessionsEvents();
+        showToast("当前对话已刷新", "success");
       } catch (error) {
         showToast(error.message, "error");
       } finally {
@@ -1677,7 +1851,7 @@ function bindLocalSessionsEvents() {
       state.localSessionsPage.selectedDayKey = selectedDay?.dayKey || null;
       state.localSessionsPage.selectedThreadId = selectedSession?.threadId || null;
       state.localSessionsPage.sessionPage = 1;
-      await refreshLocalSessionDetail(state.localSessionsPage.selectedThreadId);
+      await refreshLocalSessionDetail(state.localSessionsPage.selectedThreadId, { refresh: true });
       renderLocalSessionsPage();
       bindLocalSessionsEvents();
     });
@@ -1704,7 +1878,7 @@ function bindLocalSessionsEvents() {
       state.localSessionsPage.selectedDayKey = selectedDay.dayKey;
       state.localSessionsPage.selectedThreadId = selectedSession.threadId;
       state.localSessionsPage.sessionPage = 1;
-      await refreshLocalSessionDetail(selectedSession.threadId);
+      await refreshLocalSessionDetail(selectedSession.threadId, { refresh: true });
       renderLocalSessionsPage();
       bindLocalSessionsEvents();
     });
@@ -1731,7 +1905,7 @@ function bindLocalSessionsEvents() {
       state.localSessionsPage.selectedDayKey = selectedDay.dayKey;
       state.localSessionsPage.selectedThreadId = selectedSession.threadId;
       state.localSessionsPage.sessionPage = 1;
-      await refreshLocalSessionDetail(selectedSession.threadId);
+      await refreshLocalSessionDetail(selectedSession.threadId, { refresh: true });
       renderLocalSessionsPage();
       bindLocalSessionsEvents();
     });
@@ -1783,21 +1957,191 @@ async function openConnectorDrawer(platform) {
 
   state.drawer = {
     open: true,
+    mode: "connector",
     platform,
     activeTab: "connection",
     config: structuredClone(config),
-    recentOpenIds
+    recentOpenIds,
+    systemStatus: null,
+    systemDraft: {
+      apiBaseUrl: "",
+      apiKey: ""
+    }
+  };
+  renderDrawer();
+}
+
+async function openSystemConfigDrawer() {
+  const status = await loadSystemCodexStatus();
+  state.drawer = {
+    open: true,
+    mode: "system",
+    platform: null,
+    activeTab: "system",
+    config: null,
+    recentOpenIds: [],
+    systemStatus: status,
+    systemDraft: {
+      apiBaseUrl: status.apiConfig?.baseUrl || "",
+      apiKey: ""
+    }
   };
   renderDrawer();
 }
 
 function closeDrawer() {
   state.drawer.open = false;
+  state.drawer.mode = null;
   drawerRoot.innerHTML = "";
 }
 
+function closeSetupWizard(options = {}) {
+  const shouldRemember = options.remember !== false;
+  if (shouldRemember && state.setupWizard.status && !isSetupWizardRequired(state.setupWizard.status)) {
+    markSetupWizardDismissed(state.setupWizard.status);
+  }
+  state.setupWizard.open = false;
+  state.setupWizard.status = null;
+  if (wizardRoot) {
+    wizardRoot.innerHTML = "";
+  }
+}
+
+function renderSetupWizard() {
+  if (!wizardRoot) {
+    return;
+  }
+  const status = state.setupWizard.status;
+  if (!state.setupWizard.open || !status || !isSetupWizardRequired(status)) {
+    wizardRoot.innerHTML = "";
+    return;
+  }
+
+  const steps = status.setupWizard?.steps || [];
+  const quickCommands = status.setupWizard?.quickCommands || [];
+
+  wizardRoot.innerHTML = `
+    <div class="wizard-backdrop" data-close-setup-wizard="true">
+      <section class="setup-wizard" role="dialog" aria-modal="true">
+        <div class="panel-head">
+          <div>
+            <h2>首次安装配置向导</h2>
+            <p>检测到当前设备尚未完成网关初始化，按以下步骤完成后即可开始任务分发。</p>
+          </div>
+          <button class="button small" data-close-setup-wizard="true">稍后处理</button>
+        </div>
+        <div class="form-grid">
+          <div class="inline-note">
+            <div><strong>当前状态：</strong>${escapeHtml(status.installed ? "CLI 已安装" : "CLI 未安装")} ${escapeHtml(status.version || "")}</div>
+            <div><strong>系统入口：</strong><a href="/?drawer=system">系统配置抽屉</a></div>
+          </div>
+          <div class="setup-steps">
+            ${steps
+              .map(
+                (step, index) => `
+                  <div class="setup-step ${step.completed ? "done" : "todo"}">
+                    <div class="setup-step-head">
+                      <strong>步骤 ${index + 1}：${escapeHtml(step.title)}</strong>
+                      <span class="status-pill ${step.completed ? "status-success" : "status-pending_confirm"}">${
+                        step.completed ? "已完成" : "待完成"
+                      }</span>
+                    </div>
+                    <p>${escapeHtml(step.description || "")}</p>
+                  </div>
+                `
+              )
+              .join("")}
+          </div>
+          ${
+            quickCommands.length
+              ? `
+            <div class="setup-commands">
+              <div class="subtext">快捷命令</div>
+              ${quickCommands
+                .map(
+                  (command) => `
+                    <div class="setup-command-row">
+                      <code>${escapeHtml(command)}</code>
+                      <button class="button small subtle" data-copy-command="${escapeHtml(command)}">复制</button>
+                    </div>
+                  `
+                )
+                .join("")}
+            </div>
+          `
+              : ""
+          }
+          <div class="drawer-actions">
+            <button class="button" data-setup-open-system="true">打开系统配置</button>
+            <button class="button" data-setup-authorize="true">授权当前目录</button>
+            <button class="button primary" data-setup-install="true" ${status.installed ? "disabled" : ""}>安装 Codex CLI</button>
+            <button class="button subtle" data-setup-refresh="true">刷新状态</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
+
+  wizardRoot.querySelectorAll("[data-close-setup-wizard]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target === event.currentTarget || element.tagName === "BUTTON") {
+        closeSetupWizard();
+      }
+    });
+  });
+
+  wizardRoot.querySelectorAll("[data-copy-command]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const command = button.getAttribute("data-copy-command") || "";
+      if (!command) {
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(command);
+        showToast(`已复制命令：${command}`, "success");
+      } catch {
+        showToast("复制失败，请手动复制命令", "error");
+      }
+    });
+  });
+
+  wizardRoot.querySelector("[data-setup-open-system='true']")?.addEventListener("click", async () => {
+    await openSystemConfigDrawer();
+  });
+  wizardRoot.querySelector("[data-setup-refresh='true']")?.addEventListener("click", refreshSetupWizardStatus);
+  wizardRoot.querySelector("[data-setup-authorize='true']")?.addEventListener("click", authorizeFromSetupWizard);
+  wizardRoot.querySelector("[data-setup-install='true']")?.addEventListener("click", installFromSetupWizard);
+}
+
+function syncSetupWizardStatus(status) {
+  if (!state.setupWizard.open) {
+    return;
+  }
+  state.setupWizard.status = status;
+  if (!isSetupWizardRequired(status)) {
+    closeSetupWizard({ remember: false });
+    showToast("首次安装向导已完成", "success");
+    return;
+  }
+  renderSetupWizard();
+}
+
 function renderDrawer() {
-  if (!state.drawer.open || !state.drawer.config) {
+  if (!state.drawer.open) {
+    drawerRoot.innerHTML = "";
+    return;
+  }
+
+  if (state.drawer.mode === "system") {
+    renderSystemDrawer();
+    return;
+  }
+
+  renderConnectorDrawer();
+}
+
+function renderConnectorDrawer() {
+  if (!state.drawer.config) {
     drawerRoot.innerHTML = "";
     return;
   }
@@ -1846,6 +2190,79 @@ function renderDrawer() {
     button.addEventListener("click", () => {
       state.drawer.activeTab = button.getAttribute("data-tab");
       renderDrawer();
+    });
+  });
+
+  bindDrawerFormEvents();
+}
+
+function renderSystemDrawer() {
+  const status = state.drawer.systemStatus;
+  if (!status) {
+    drawerRoot.innerHTML = "";
+    return;
+  }
+
+  const installButtonLabel = status.installed ? "已安装 Codex CLI" : "安装 Codex CLI";
+  const sessionScanLabel = status.sessionScan?.enabled
+    ? `线程 ${status.sessionScan.totalThreads || 0} · 文件 ${status.sessionScan.totalFiles || 0}`
+    : "未启用";
+  const resolvedCli = status.resolvedCodexBin || status.codexBin || "codex";
+  const detectionMessage = status.detectionMessage ? String(status.detectionMessage) : "";
+  const quickCommands = Array.isArray(status.setupWizard?.quickCommands) ? status.setupWizard.quickCommands : [];
+  const apiProbeLabel = status.apiConfig?.usable ? "可用" : "不可用";
+  const apiProbeMessage = status.apiConfig?.probeMessage ? String(status.apiConfig.probeMessage) : "";
+
+  drawerRoot.innerHTML = `
+    <div class="drawer-backdrop" data-close-drawer="true">
+      <aside class="drawer" role="dialog" aria-modal="true">
+        <div class="panel-head">
+          <div>
+            <h2>系统配置</h2>
+            <p>启动初始化、Codex CLI 安装检测、项目目录授权与 Codex CLI 命令探测。</p>
+          </div>
+          <button class="button small" data-close-drawer="true">关闭</button>
+        </div>
+        <div class="form-grid">
+          <div class="inline-note">
+            <div><strong>CLI 状态：</strong>${escapeHtml(status.installed ? "已安装" : "未安装")} ${escapeHtml(
+              status.version || ""
+            )}</div>
+            <div><strong>CLI 命令：</strong>${escapeHtml(status.codexBin || "codex")}</div>
+            <div><strong>实际 CLI：</strong>${escapeHtml(resolvedCli)}</div>
+            <div><strong>项目目录：</strong>${escapeHtml(status.projectRoot || "-")}</div>
+            <div><strong>会话扫描：</strong>${escapeHtml(sessionScanLabel)} ${status.sessionScan?.scannedAt ? `· ${escapeHtml(status.sessionScan.scannedAt)}` : ""}</div>
+            <div><strong>目录授权：</strong>${status.projectAuthorization?.trustedInConfig ? "已写入 trusted" : "运行时 full-access 授权"}</div>
+            <div><strong>Codex CLI 命令探测：</strong>${escapeHtml(apiProbeLabel)} ${status.apiConfig?.probeCheckedAt ? `· ${escapeHtml(status.apiConfig.probeCheckedAt)}` : ""}</div>
+            ${apiProbeMessage ? `<div><strong>探测结果：</strong>${escapeHtml(apiProbeMessage)}</div>` : ""}
+            <div><strong>执行策略：</strong>${escapeHtml(status.dispatchCommandPreview || "-")}</div>
+            ${
+              detectionMessage
+                ? `<div><strong>检测提示：</strong>${escapeHtml(detectionMessage)}</div>`
+                : ""
+            }
+            ${
+              quickCommands.length
+                ? `<div><strong>快捷命令：</strong>${quickCommands.map((command) => `<code>${escapeHtml(command)}</code>`).join(" / ")}</div>`
+                : ""
+            }
+            <div><strong>快捷入口：</strong><a href="/?drawer=system">打开系统配置抽屉</a></div>
+          </div>
+          <div class="drawer-actions">
+            <button class="button" data-system-install="true" ${status.installed ? "disabled" : ""}>${escapeHtml(installButtonLabel)}</button>
+            <button class="button" data-system-authorize="true">授权当前目录</button>
+            <button class="button subtle" data-system-refresh="true">刷新状态</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  `;
+
+  drawerRoot.querySelectorAll("[data-close-drawer]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (event.target === event.currentTarget || element.tagName === "BUTTON") {
+        closeDrawer();
+      }
     });
   });
 
@@ -1964,6 +2381,11 @@ function renderDrawerTab(config, recentOpenIds) {
 }
 
 function bindDrawerFormEvents() {
+  if (state.drawer.mode === "system") {
+    bindSystemDrawerFormEvents();
+    return;
+  }
+
   drawerRoot.querySelectorAll("input, textarea, select").forEach((field) => {
     field.addEventListener("input", syncDrawerConfigFromForm);
     field.addEventListener("change", syncDrawerConfigFromForm);
@@ -1974,7 +2396,17 @@ function bindDrawerFormEvents() {
   drawerRoot.querySelector("[data-send-feishu-message='true']")?.addEventListener("click", sendFeishuQuickMessage);
 }
 
+function bindSystemDrawerFormEvents() {
+  drawerRoot.querySelector("[data-system-install='true']")?.addEventListener("click", installCodexCliFromDrawer);
+  drawerRoot.querySelector("[data-system-refresh='true']")?.addEventListener("click", refreshSystemStatusInDrawer);
+  drawerRoot.querySelector("[data-system-authorize='true']")?.addEventListener("click", authorizeProjectFromDrawer);
+}
+
 function syncDrawerConfigFromForm() {
+  if (state.drawer.mode !== "connector") {
+    return;
+  }
+
   const form = state.drawer.config;
   if (!form) return;
 
@@ -2085,16 +2517,121 @@ async function testConnectorConfig() {
   }
 }
 
+async function refreshSetupWizardStatus() {
+  try {
+    const status = await loadSystemCodexStatus();
+    syncSetupWizardStatus(status);
+    if (!state.setupWizard.open) {
+      return;
+    }
+    showToast("向导状态已刷新", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function installFromSetupWizard() {
+  const confirmed = window.confirm("将执行 npm install -g @openai/codex，是否继续？");
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    const result = await fetchJson("/api/system/codex-cli/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirm: true
+      })
+    });
+    syncSetupWizardStatus(result.status);
+    showToast("Codex CLI 安装完成", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function authorizeFromSetupWizard() {
+  try {
+    const result = await fetchJson("/api/system/codex-cli/authorize-project", {
+      method: "POST"
+    });
+    syncSetupWizardStatus(result.status);
+    showToast("项目目录授权已更新", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function installCodexCliFromDrawer() {
+  const confirmed = window.confirm("将执行 npm install -g @openai/codex，是否继续？");
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    const result = await fetchJson("/api/system/codex-cli/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirm: true
+      })
+    });
+
+    state.drawer.systemStatus = result.status;
+    syncSetupWizardStatus(result.status);
+    renderDrawer();
+    showToast("Codex CLI 安装完成", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function refreshSystemStatusInDrawer() {
+  try {
+    state.drawer.systemStatus = await loadSystemCodexStatus();
+    syncSetupWizardStatus(state.drawer.systemStatus);
+    const currentBaseUrl = state.drawer.systemStatus?.apiConfig?.baseUrl || "";
+    state.drawer.systemDraft.apiBaseUrl = currentBaseUrl;
+    renderDrawer();
+    showToast("系统状态已刷新", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function authorizeProjectFromDrawer() {
+  try {
+    const result = await fetchJson("/api/system/codex-cli/authorize-project", {
+      method: "POST"
+    });
+    state.drawer.systemStatus = result.status;
+    syncSetupWizardStatus(result.status);
+    renderDrawer();
+    showToast("项目目录授权已更新", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 async function boot() {
   try {
     await renderRoute();
+    await applyStartupDrawerFromQuery();
+    await applyStartupSetupWizard();
     if (route().name === "dashboard") {
       startDashboardRefresh();
+      stopLocalSessionsRefresh();
+    } else if (route().name === "localSessions") {
+      stopDashboardRefresh();
+      startLocalSessionsRefresh();
     } else {
       stopDashboardRefresh();
+      stopLocalSessionsRefresh();
     }
   } catch (error) {
     stopDashboardRefresh();
+    stopLocalSessionsRefresh();
     renderShell(
       "管理台加载失败",
       "后端接口已经启动，但当前页面没能正确拿到数据。",
@@ -2104,14 +2641,68 @@ async function boot() {
   }
 }
 
+async function applyStartupDrawerFromQuery() {
+  if (startupDrawerApplied) {
+    return;
+  }
+  const params = new URLSearchParams(window.location.search || "");
+  const drawer = (params.get("drawer") || "").trim().toLowerCase();
+  if (drawer !== "system") {
+    startupDrawerApplied = true;
+    return;
+  }
+  if (route().name !== "dashboard") {
+    startupDrawerApplied = true;
+    return;
+  }
+  startupDrawerApplied = true;
+  await openSystemConfigDrawer();
+}
+
+async function applyStartupSetupWizard() {
+  if (startupSetupWizardApplied) {
+    return;
+  }
+  if (route().name !== "dashboard") {
+    startupSetupWizardApplied = true;
+    return;
+  }
+
+  const params = new URLSearchParams(window.location.search || "");
+  if ((params.get("drawer") || "").trim().toLowerCase() === "system") {
+    startupSetupWizardApplied = true;
+    return;
+  }
+
+  startupSetupWizardApplied = true;
+  try {
+    const status = await loadSystemCodexStatus();
+    if (!isSetupWizardRequired(status)) {
+      return;
+    }
+    if (shouldSkipSetupWizardByDismiss(status)) {
+      return;
+    }
+    state.setupWizard.open = true;
+    state.setupWizard.status = status;
+    renderSetupWizard();
+  } catch {
+    // ignore onboarding auto-popup failure
+  }
+}
+
 window.addEventListener("hashchange", () => {
   stopDashboardRefresh();
+  stopLocalSessionsRefresh();
   void boot();
 });
 
 window.addEventListener("click", (event) => {
   if (event.target === drawerRoot.querySelector(".drawer-backdrop")) {
     closeDrawer();
+  }
+  if (event.target === wizardRoot?.querySelector(".wizard-backdrop")) {
+    closeSetupWizard();
   }
 });
 

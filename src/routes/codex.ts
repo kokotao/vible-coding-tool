@@ -22,7 +22,32 @@ const codexEventSchema = z.object({
   summary: z.string().optional(),
   detail: z.string().optional(),
   senderId: z.string().optional(),
-  occurredAt: z.string().optional()
+  occurredAt: z.string().optional(),
+  runtimeMeta: z
+    .object({
+      durationMs: z.number().int().nonnegative().nullish(),
+      tokenUsage: z.number().int().nonnegative().nullish(),
+      modelSlug: z.string().nullish(),
+      tokenUsageDetail: z
+        .object({
+          inputTokens: z.number().int().nonnegative().nullish(),
+          cachedInputTokens: z.number().int().nonnegative().nullish(),
+          outputTokens: z.number().int().nonnegative().nullish(),
+          reasoningOutputTokens: z.number().int().nonnegative().nullish(),
+          totalTokens: z.number().int().nonnegative().nullish()
+        })
+        .nullish(),
+      lastTokenUsageDetail: z
+        .object({
+          inputTokens: z.number().int().nonnegative().nullish(),
+          cachedInputTokens: z.number().int().nonnegative().nullish(),
+          outputTokens: z.number().int().nonnegative().nullish(),
+          reasoningOutputTokens: z.number().int().nonnegative().nullish(),
+          totalTokens: z.number().int().nonnegative().nullish()
+        })
+        .nullish()
+    })
+    .nullish()
 });
 
 const codexBatchEventSchema = z.object({

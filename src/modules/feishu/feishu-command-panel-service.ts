@@ -182,7 +182,8 @@ export class FeishuCommandPanelService {
       card: buildFeishuSelectionCard({
         context: updated,
         project: this.resolveProject(snapshot.items, session.projectPath),
-        session
+        session,
+        notice: "已切换到此会话，可直接回复任务内容。"
       })
     };
   }
@@ -275,11 +276,23 @@ export class FeishuCommandPanelService {
   }
 
   activateComposeMode(openId: string, mode: FeishuPanelComposeMode): FeishuCommandPanelSelection {
-    const context = this.updateContext(openId, {
+    const patch: Partial<Omit<FeishuPanelContextRecord, "openId">> = {
       currentView: "selection",
       pendingComposeMode: mode,
-      lastAction: mode === "session_command" ? "compose_session_command" : "compose_thread_command"
-    });
+      lastAction:
+        mode === "session_command"
+          ? "compose_session_command"
+          : mode === "project_session_command"
+            ? "compose_project_session_command"
+            : "compose_thread_command"
+    };
+
+    if (mode === "project_session_command") {
+      patch.selectedThreadId = null;
+      patch.selectedSessionTitle = null;
+    }
+
+    const context = this.updateContext(openId, patch);
 
     return {
       context,
@@ -333,6 +346,8 @@ export class FeishuCommandPanelService {
         return this.activateComposeMode(openId, "session_command");
       case "compose_thread_command":
         return this.activateComposeMode(openId, "thread_command");
+      case "compose_project_session_command":
+        return this.activateComposeMode(openId, "project_session_command");
       case "help":
         return this.showCurrentSelection(openId, refresh);
       case "start_task":

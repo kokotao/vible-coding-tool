@@ -1,11 +1,11 @@
 # vible-coding-Tool
 
-一个用于连接 `Codex / Claude` 等 vibe coding 工具与飞书、QQ 机器人的双向网关服务。
+一个用于连接 `Codex / Claude（未来支持其他 vibe coding 工具）` 等 vibe coding 工具与飞书、QQ（未来支持其他机器人） 机器人的双向网关服务。
 
 ## 作者信息
 
-- 作者：Albert_Luo
-- 邮箱：480199976@qq.com
+- 作者：Albert\_Luo
+- 邮箱：<480199976@qq.com>
 - 更新日期：2026-04-28
 
 ## 当前进度
@@ -22,7 +22,7 @@
 - `L2 飞书接入层（按需）`：在飞书后台启用长连接并订阅 `im.message.receive_v1`，执行 `npm run feishu:ws`
 - `L3 Codex 回推层（按需）`：执行 `npm run codex:run -- --session <session> --title "<title>" -- <你的命令>` 或 `npm run codex:watch -- --session <session> --recipientOpenId <open_id>`
 
-## 全局安装（同款 CLI 体验）
+## 全局安装
 
 安装后可直接执行短命令：`vct`
 
@@ -55,7 +55,7 @@ vct
 
 开发期热重载（可选）：
 
-5. `npm run dev:watch`（会监听文件变化；在 watch 终端按回车会触发重启）
+1. `npm run dev:watch`（会监听文件变化；在 watch 终端按回车会触发重启）
 
 ## 一键安装与健康检查
 
@@ -251,7 +251,7 @@ npm run codex:watch -- --session feishu-codex-demo --recipientOpenId <你的open
 - 默认 `--bootstrap tail`，首次启动只跟踪后续新增事件，不会回放历史
 - `--session` 可指定统一回推会话（建议与你飞书里 `#session:<id>` 一致）
 - `--recipientOpenId` 会作为发送者标识上报，网关可自动识别并回推给该用户
-- 如果不传 `--recipientOpenId`，watcher 会先去网关读取 `/api/feishu/open-ids/recent` 的最新 open_id，再作为回推目标
+- 如果不传 `--recipientOpenId`，watcher 会先去网关读取 `/api/feishu/open-ids/recent` 的最新 open\_id，再作为回推目标
 - 状态文件默认写入 `./data/codex-watcher-state.json`，用于断点续扫去重
 - 常用参数：
   - `--gateway http://127.0.0.1:3000`
@@ -281,3 +281,10 @@ CODEX_WATCH_AUTO_START=false
 
 - `npm run test`
 - `npm run build`
+
+## 演示
+
+  ### --用户发送指令到 codex
+  ![alt text](image-1.png)
+  ### --codex 回推结果到飞书
+  ![codex 完成推送](image.png)

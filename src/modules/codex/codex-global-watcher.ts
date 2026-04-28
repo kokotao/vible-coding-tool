@@ -7,9 +7,15 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolveFeishuWatcherRecipientOpenId } from "../feishu/feishu-open-id-resolver";
+import {
+  parseCodexTokenCountSnapshot,
+  type CodexRuntimeMeta,
+  type CodexTokenUsageBreakdown
+} from "./codex-runtime-meta";
 
 const THREAD_ID_PATTERN = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 const MAX_PROCESSED_KEYS = 5000;
+type WatcherLogger = Pick<Console, "info" | "warn" | "error">;
 
 type WatcherState = {
   version: 1;
@@ -17,6 +23,14 @@ type WatcherState = {
   fileOffsets: Record<string, number>;
   processedEventKeys: string[];
   updatedAt: string;
+};
+
+type TurnRuntimeState = {
+  startedAt: string | null;
+  modelSlug: string | null;
+  tokenUsage: number | null;
+  tokenUsageDetail: CodexTokenUsageBreakdown | null;
+  lastTokenUsageDetail: CodexTokenUsageBreakdown | null;
 };
 
 export type StartCodexGlobalWatcherArgs = {
@@ -33,6 +47,7 @@ export type StartCodexGlobalWatcherArgs = {
   ingressToken?: string;
   signingSecret?: string;
   fetchImpl?: typeof fetch;
+  logger?: WatcherLogger;
 };
 
 export type CodexGlobalWatcherHandle = {
@@ -189,7 +204,7 @@ class CodexGlobalWatcher {
       })) || this.args.senderId;
 
     if (!this.args.recipientOpenId && this.resolvedSenderId !== this.args.senderId) {
-      console.log(`[codex-watch] resolved recent feishu open_id=${this.resolvedSenderId}`);
+      this.args.logger?.info?.(`[codex-watch] resolved recent feishu open_id=${this.resolvedSenderId}`);
     }
 
     await this.tick();
@@ -286,10 +301,61 @@ class CodexGlobalWatcher {
 
     const lines = chunk.split("\n");
     let postedAny = false;
+    const runtimeByTurnId = new Map<string, TurnRuntimeState>();
+    let activeTurnId: string | null = null;
+    let latestTokenCount: ReturnType<typeof parseCodexTokenCountSnapshot> | null = null;
+    let defaultModelSlug: string | null = null;
+    let sessionStartedAt: string | null = null;
 
     for (const line of lines) {
       const normalized = line.trim();
       if (!normalized) {
+        continue;
+      }
+
+      const sessionMeta = parseSessionMetaLine(normalized);
+      if (sessionMeta) {
+        if (sessionMeta.modelSlug) {
+          defaultModelSlug = sessionMeta.modelSlug;
+        }
+        if (sessionMeta.startedAt) {
+          sessionStartedAt = pickEarlierTimestamp(sessionStartedAt, sessionMeta.startedAt);
+        }
+        continue;
+      }
+
+      const taskStarted = parseTaskStartedLine(normalized);
+      if (taskStarted) {
+        activeTurnId = taskStarted.turnId;
+        const state = ensureTurnRuntimeState(runtimeByTurnId, taskStarted.turnId);
+        state.startedAt = taskStarted.startedAt;
+        if (!state.modelSlug && defaultModelSlug) {
+          state.modelSlug = defaultModelSlug;
+        }
+        continue;
+      }
+
+      const turnContext = parseTurnContextLine(normalized);
+      if (turnContext) {
+        activeTurnId = turnContext.turnId;
+        const state = ensureTurnRuntimeState(runtimeByTurnId, turnContext.turnId);
+        if (turnContext.modelSlug) {
+          state.modelSlug = turnContext.modelSlug;
+        } else if (!state.modelSlug && defaultModelSlug) {
+          state.modelSlug = defaultModelSlug;
+        }
+        continue;
+      }
+
+      const tokenCount = parseTokenCountLine(normalized);
+      if (tokenCount) {
+        latestTokenCount = tokenCount;
+        if (activeTurnId) {
+          const state = ensureTurnRuntimeState(runtimeByTurnId, activeTurnId);
+          state.tokenUsage = tokenCount.totalUsage?.totalTokens ?? state.tokenUsage;
+          state.tokenUsageDetail = tokenCount.totalUsage ?? state.tokenUsageDetail;
+          state.lastTokenUsageDetail = tokenCount.lastUsage ?? state.lastTokenUsageDetail;
+        }
         continue;
       }
 
@@ -303,6 +369,11 @@ class CodexGlobalWatcher {
         continue;
       }
 
+      const runtimeState = runtimeByTurnId.get(parsed.turnId) ?? null;
+      const durationStart = sessionStartedAt || runtimeState?.startedAt || null;
+      const durationMs = resolveDurationMs(durationStart, parsed.timestamp ?? null);
+      const tokenUsage = runtimeState?.tokenUsage ?? latestTokenCount?.totalUsage?.totalTokens ?? null;
+
       const payload = {
         eventId: `codex-watch-complete-${threadId}-${parsed.turnId}`,
         taskId: `codex-turn-${parsed.turnId}`,
@@ -312,7 +383,14 @@ class CodexGlobalWatcher {
         summary: `Codex任务完成：${deriveSummary(parsed.lastAgentMessage)}`,
         detail: parsed.lastAgentMessage || "任务已完成（无输出摘要）",
         senderId: this.resolvedSenderId,
-        occurredAt: parsed.timestamp || new Date().toISOString()
+        occurredAt: parsed.timestamp || new Date().toISOString(),
+        runtimeMeta: {
+          durationMs,
+          tokenUsage,
+          modelSlug: runtimeState?.modelSlug || defaultModelSlug || null,
+          tokenUsageDetail: runtimeState?.tokenUsageDetail ?? latestTokenCount?.totalUsage ?? null,
+          lastTokenUsageDetail: runtimeState?.lastTokenUsageDetail ?? latestTokenCount?.lastUsage ?? null
+        } satisfies CodexRuntimeMeta
       } as const;
 
       await this.postEvent(payload);
@@ -460,6 +538,183 @@ function parseTaskCompleteLine(line: string) {
     lastAgentMessage: String(payload.last_agent_message || payload.lastAgentMessage || "").trim(),
     timestamp: String(record.timestamp || "").trim() || null
   };
+}
+
+function parseSessionMetaLine(line: string) {
+  let record;
+  try {
+    record = JSON.parse(line) as {
+      type?: string;
+      timestamp?: string;
+      payload?: Record<string, unknown>;
+    };
+  } catch {
+    return null;
+  }
+
+  if (record.type !== "session_meta") {
+    return null;
+  }
+
+  const payload = record.payload || {};
+  return {
+    modelSlug: normalizeString(payload.model),
+    startedAt: normalizeIsoTimestamp(payload.timestamp) || normalizeIsoTimestamp(record.timestamp)
+  };
+}
+
+function parseTaskStartedLine(line: string) {
+  let record;
+  try {
+    record = JSON.parse(line) as {
+      type?: string;
+      timestamp?: string;
+      payload?: Record<string, unknown>;
+    };
+  } catch {
+    return null;
+  }
+
+  if (record.type !== "event_msg") {
+    return null;
+  }
+
+  const payload = record.payload || {};
+  if (payload.type !== "task_started") {
+    return null;
+  }
+
+  const turnId = String(payload.turn_id || payload.turnId || "").trim();
+  if (!turnId) {
+    return null;
+  }
+
+  const startedAt = normalizeStartedAt(payload.started_at);
+  return {
+    turnId,
+    startedAt: startedAt || String(record.timestamp || "").trim() || null
+  };
+}
+
+function parseTurnContextLine(line: string) {
+  let record;
+  try {
+    record = JSON.parse(line) as {
+      type?: string;
+      payload?: Record<string, unknown>;
+    };
+  } catch {
+    return null;
+  }
+
+  if (record.type !== "turn_context") {
+    return null;
+  }
+
+  const payload = record.payload || {};
+  const turnId = String(payload.turn_id || payload.turnId || "").trim();
+  if (!turnId) {
+    return null;
+  }
+
+  return {
+    turnId,
+    modelSlug: normalizeString(payload.model)
+  };
+}
+
+function parseTokenCountLine(line: string) {
+  let record;
+  try {
+    record = JSON.parse(line) as {
+      type?: string;
+      payload?: Record<string, unknown>;
+      info?: Record<string, unknown>;
+    };
+  } catch {
+    return null;
+  }
+
+  if (record.type !== "token_count") {
+    return null;
+  }
+
+  const snapshot = parseCodexTokenCountSnapshot(record);
+  if (!snapshot) {
+    return null;
+  }
+
+  return snapshot;
+}
+
+function normalizeStartedAt(value: unknown) {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+
+  return new Date(numeric * 1000).toISOString();
+}
+
+function normalizeIsoTimestamp(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Date.parse(trimmed);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return new Date(parsed).toISOString();
+}
+
+function normalizeString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function resolveDurationMs(startedAt: string | null | undefined, completedAt: string | null | undefined) {
+  if (!startedAt || !completedAt) {
+    return null;
+  }
+
+  const startedMs = Date.parse(startedAt);
+  const completedMs = Date.parse(completedAt);
+  if (!Number.isFinite(startedMs) || !Number.isFinite(completedMs) || completedMs < startedMs) {
+    return null;
+  }
+
+  return completedMs - startedMs;
+}
+
+function pickEarlierTimestamp(first: string | null | undefined, second: string | null | undefined) {
+  if (first && second) {
+    return Date.parse(first) <= Date.parse(second) ? first : second;
+  }
+
+  return first || second || null;
+}
+
+function ensureTurnRuntimeState(map: Map<string, TurnRuntimeState>, turnId: string) {
+  const existing = map.get(turnId);
+  if (existing) {
+    return existing;
+  }
+
+  const created: TurnRuntimeState = {
+    startedAt: null,
+    modelSlug: null,
+    tokenUsage: null,
+    tokenUsageDetail: null,
+    lastTokenUsageDetail: null
+  };
+  map.set(turnId, created);
+  return created;
 }
 
 function deriveSummary(detail: string) {

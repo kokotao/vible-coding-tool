@@ -75,6 +75,35 @@ function createFeishuOpenApiMock(options: { userNames?: Record<string, string | 
   };
 }
 
+function parseOutboundInteractiveCard(bodyText: string) {
+  const payload = JSON.parse(bodyText) as {
+    msg_type: string;
+    content: string;
+  };
+
+  expect(payload.msg_type).toBe("interactive");
+  return JSON.parse(payload.content) as {
+    header?: {
+      template?: string;
+      title?: {
+        content?: string;
+      };
+    };
+    elements: Array<{
+      tag: string;
+      content?: string;
+      actions?: Array<{
+        tag: string;
+        type?: string;
+        text?: {
+          content?: string;
+        };
+        value?: Record<string, unknown>;
+      }>;
+    }>;
+  };
+}
+
 function createFeishuPanelSessionsFixture() {
   const sessionsRoot = mkdtempSync(join(tmpdir(), "feishu-panel-sessions-"));
   const dayPath = join(sessionsRoot, "2026", "04", "27");
@@ -430,6 +459,13 @@ describe("feishu webhook api", () => {
         displayLabel: "自动识别姓名 (ou_auto_user)",
         bindingSource: "auto"
       });
+
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+      const cardPayload = parseOutboundInteractiveCard(mockOpenApi.messageBodies[0]);
+      const metadataBlock = cardPayload.elements.find((item) => item.tag === "markdown" && item.content?.includes("【任务元信息】"));
+      expect(metadataBlock?.content).toContain("会话ID：feishu-auto-name");
+      expect(metadataBlock?.content).toContain("触发方：自动识别姓名");
+      expect(metadataBlock?.content).toContain("线程ID：无");
     } finally {
       await app.close();
     }
@@ -727,6 +763,11 @@ describe("feishu webhook api", () => {
         displayLabel: "ou_fallback_user",
         bindingSource: null
       });
+
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+      const cardPayload = parseOutboundInteractiveCard(mockOpenApi.messageBodies[0]);
+      const metadataBlock = cardPayload.elements.find((item) => item.tag === "markdown" && item.content?.includes("【任务元信息】"));
+      expect(metadataBlock?.content).toContain("触发方：ou_fallback_user");
     } finally {
       await app.close();
     }
@@ -1610,6 +1651,194 @@ describe("feishu webhook api", () => {
     }
   });
 
+  it("switches to selected session from card action and replies with direct-reply tip", async () => {
+    const fixture = createFeishuPanelSessionsFixture();
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu",
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: fixture.sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "card.action.trigger",
+            context: {
+              open_message_id: "msg-card-action-select-session",
+              open_chat_id: "chat-card-action-select-session"
+            },
+            operator: {
+              open_id: "ou_panel_select_session_user"
+            },
+            action: {
+              tag: "button",
+              value: {
+                panelAction: "select_session",
+                selector: fixture.threadAlpha1,
+                threadId: fixture.threadAlpha1
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "select_session",
+          context: expect.objectContaining({
+            selectedThreadId: fixture.threadAlpha1,
+            currentView: "selection"
+          })
+        })
+      );
+
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+      const outbound = JSON.parse(mockOpenApi.messageBodies[0]) as {
+        receive_id: string;
+        msg_type: string;
+        content: string;
+      };
+      expect(outbound.receive_id).toBe("ou_panel_select_session_user");
+      expect(outbound.msg_type).toBe("interactive");
+      expect(outbound.content).toContain("已切换到此会话，可直接回复任务内容。");
+    } finally {
+      await app.close();
+      rmSync(fixture.sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns quickly for session card actions even when outbound card notify is slow", async () => {
+    const fixture = createFeishuPanelSessionsFixture();
+    const fetchCalls: string[] = [];
+    const hangingFetch = ((input: string | URL | Request) => {
+      fetchCalls.push(String(input));
+      return new Promise<Response>(() => {});
+    }) as typeof fetch;
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: hangingFetch,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu",
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: fixture.sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await Promise.race([
+        app.inject({
+          method: "POST",
+          url: "/api/feishu/webhook",
+          headers: {
+            "x-lark-request-token": "verify-token"
+          },
+          payload: {
+            event: {
+              type: "card.action.trigger",
+              context: {
+                open_message_id: "msg-card-action-select-session-fast",
+                open_chat_id: "chat-card-action-select-session-fast"
+              },
+              operator: {
+                open_id: "ou_panel_select_session_user"
+              },
+              action: {
+                tag: "button",
+                value: {
+                  panelAction: "select_session",
+                  selector: fixture.threadAlpha1,
+                  threadId: fixture.threadAlpha1
+                }
+              }
+            }
+          }
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("card action callback timed out")), 1000);
+        })
+      ]);
+
+      expect((response as { statusCode: number }).statusCode).toBe(200);
+      expect((response as { json: () => unknown }).json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "select_session",
+          context: expect.objectContaining({
+            selectedThreadId: fixture.threadAlpha1,
+            currentView: "selection"
+          })
+        })
+      );
+      expect(fetchCalls.length).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+      rmSync(fixture.sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
   it("supports session list pagination and 24h/7d quick filters in panel card actions", async () => {
     const fixture = createFeishuPanelPaginationFixture();
     const mockOpenApi = createFeishuOpenApiMock();
@@ -1925,6 +2154,183 @@ describe("feishu webhook api", () => {
       });
       expect(currentSelectionResponse.statusCode).toBe(200);
       expect(currentSelectionResponse.json().context.pendingComposeMode).toBeNull();
+    } finally {
+      await app.close();
+      rmSync(fixture.sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("shows a primary new session button after selecting a project and starts a fresh session", async () => {
+    const fixture = createFeishuPanelSessionsFixture();
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu",
+        codexAutoDispatchEnabled: false,
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: fixture.sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const selectProjectResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-project-session-select-project",
+              message_type: "text",
+              content: `{"text":"选择项目：${fixture.projectAlphaPath}"}`
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_project_session_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(selectProjectResponse.statusCode).toBe(200);
+      expect(selectProjectResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "select_project",
+          context: expect.objectContaining({
+            currentView: "session_list",
+            selectedProjectPath: fixture.projectAlphaPath
+          })
+        })
+      );
+
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+      const projectSessionCard = parseOutboundInteractiveCard(mockOpenApi.messageBodies[0]);
+      const sessionActionBlock = projectSessionCard.elements.find((item) => item.tag === "action" && Array.isArray(item.actions));
+      const newSessionButton = sessionActionBlock?.actions?.find((button) => button.text?.content === "新建 session");
+      expect(newSessionButton).toEqual(
+        expect.objectContaining({
+          type: "primary"
+        })
+      );
+
+      const composeResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "card.action.trigger",
+            context: {
+              open_message_id: "msg-project-session-compose-card",
+              open_chat_id: "chat-project-session-compose-card"
+            },
+            operator: {
+              open_id: "ou_project_session_user"
+            },
+            action: {
+              tag: "button",
+              value: {
+                panelAction: "compose_project_session_command"
+              }
+            }
+          }
+        }
+      });
+
+      expect(composeResponse.statusCode).toBe(200);
+      expect(composeResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "compose_project_session_command",
+          context: expect.objectContaining({
+            pendingComposeMode: "project_session_command"
+          })
+        })
+      );
+
+      expect(mockOpenApi.messageBodies).toHaveLength(2);
+      const composeGuideCard = parseOutboundInteractiveCard(mockOpenApi.messageBodies[1]);
+      expect(composeGuideCard.header?.template).toBe("green");
+      expect(composeGuideCard.header?.title?.content).toBe("新建 session 模式已开启");
+
+      const dispatchResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-project-session-dispatch",
+              message_type: "text",
+              content: "{\"text\":\"继续优化卡片按钮样式\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_project_session_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(dispatchResponse.statusCode).toBe(200);
+      const dispatchJson = dispatchResponse.json() as {
+        accepted: boolean;
+        sessionId: string;
+        dispatch?: {
+          skipped?: boolean;
+          reason?: string;
+        };
+      };
+      expect(dispatchJson).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          sessionId: expect.any(String),
+          dispatch: expect.objectContaining({
+            skipped: true,
+            reason: "dispatch_disabled"
+          })
+        })
+      );
+      expect(dispatchJson.sessionId).not.toBe(fixture.threadAlpha1);
+      expect(dispatchJson.sessionId).toMatch(/^[0-9a-f-]{36}$/i);
     } finally {
       await app.close();
       rmSync(fixture.sessionsRoot, { recursive: true, force: true });

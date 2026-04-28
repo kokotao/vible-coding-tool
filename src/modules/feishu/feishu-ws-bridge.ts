@@ -11,7 +11,7 @@ type FeishuConnectorConfig = {
   appSecret?: string;
 };
 
-type FeishuBridgeLogger = Pick<Console, "info" | "warn" | "error">;
+type FeishuBridgeLogger = Pick<Console, "info" | "warn" | "error" | "debug" | "trace">;
 
 type FeishuMessageHandlers = {
   "im.message.receive_v1": (event: Record<string, unknown>) => Promise<void>;
@@ -27,6 +27,7 @@ type FeishuWsClientOptions = {
   appId: string;
   appSecret: string;
   loggerLevel: Lark.LoggerLevel;
+  logger: FeishuBridgeLogger;
   onReady: () => void;
   onReconnecting: () => void;
   onReconnected: () => void;
@@ -74,7 +75,8 @@ export async function startFeishuWsBridge(options: FeishuWsBridgeOptions = {}): 
   const wsClient = clientFactory({
     appId,
     appSecret,
-    loggerLevel: Lark.LoggerLevel.info,
+    loggerLevel: Lark.LoggerLevel.error,
+    logger,
     onReady: () => {
       logger.info("[feishu-ws] connected");
     },
@@ -269,6 +271,7 @@ function createDefaultClientFactory(logger: FeishuBridgeLogger) {
       appId: options.appId,
       appSecret: options.appSecret,
       loggerLevel: options.loggerLevel,
+      logger: options.logger,
       onReady: options.onReady,
       onReconnecting: options.onReconnecting,
       onReconnected: options.onReconnected,
@@ -277,7 +280,10 @@ function createDefaultClientFactory(logger: FeishuBridgeLogger) {
 }
 
 function createDefaultDispatcherFactory() {
-  return (handlers: FeishuMessageHandlers) => new Lark.EventDispatcher({}).register(handlers);
+  return (handlers: FeishuMessageHandlers) =>
+    new Lark.EventDispatcher({
+      loggerLevel: Lark.LoggerLevel.error
+    }).register(handlers);
 }
 
 function normalizeGatewayUrl(value: string) {

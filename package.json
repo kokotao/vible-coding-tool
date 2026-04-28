@@ -1,13 +1,35 @@
 {
-  "name": "vible-coding-tool",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@tauchun/viblect",
+  "version": "0.1.2",
+  "private": false,
   "description": "Gateway service between vibe coding tools and IM bots.",
+  "bin": {
+    "vct": "bin/vible-gateway.js",
+    "viblect": "bin/vible-gateway.js",
+    "vible-gateway": "bin/vible-gateway.js",
+    "vible-coding-tool": "bin/vible-gateway.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist/src",
+    "public",
+    "bin",
+    "README.md"
+  ],
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx src/server.ts",
+    "dev:watch": "tsx watch src/server.ts",
     "feishu:ws": "tsx scripts/feishu-ws-bridge.ts",
     "codex:run": "tsx scripts/codex-task-runner.ts",
     "codex:watch": "tsx scripts/codex-global-watcher.ts",
+    "install:check": "node scripts/install-runner.cjs",
+    "install:check:unix": "bash scripts/install.sh",
+    "install:check:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1",
+    "publish:check": "node scripts/publish-safety-check.cjs",
+    "prepublishOnly": "npm run publish:check",
+    "prepack": "npm run build",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run"
   },

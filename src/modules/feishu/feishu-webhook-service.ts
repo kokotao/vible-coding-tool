@@ -31,6 +31,7 @@ import { RiskConfirmationRepository } from "../../storage/repositories/risk-conf
 import { SessionThreadRepository } from "../../storage/repositories/session-thread-repository";
 import { TaskRepository } from "../../storage/repositories/task-repository";
 import { ToolSessionRepository } from "../../storage/repositories/tool-session-repository";
+import type { TerminalEventStream } from "../../lib/terminal-event-stream";
 
 type FeishuWebhookServiceDeps = {
   taskRepository: TaskRepository;
@@ -46,6 +47,7 @@ type FeishuWebhookServiceDeps = {
   codexDispatchService?: CodexDispatchService;
   feishuNotifier?: FeishuOutboundNotifier;
   codexLocalSessionService?: CodexLocalSessionService;
+  terminalEventStream?: TerminalEventStream;
 };
 
 type FeishuIncomingMessage = {
@@ -79,9 +81,10 @@ export class FeishuWebhookService {
 
         const parsed: ParsedCommand = {
           sessionId: panelContext.selectedThreadId || null,
+          newSession: false,
           prompt,
           threadAlias: null,
-          threadSelector: null,
+          threadSelector: panelContext.selectedThreadId || null,
           sourcePlatform: "feishu",
           senderId: message.senderId,
           platformMessageId: message.messageId
@@ -101,6 +104,7 @@ export class FeishuWebhookService {
 
         const parsed: ParsedCommand = {
           sessionId: panelContext.selectedThreadId,
+          newSession: false,
           prompt,
           threadAlias: null,
           threadSelector: panelContext.selectedThreadId,
@@ -112,12 +116,36 @@ export class FeishuWebhookService {
         return this.executeParsedCommand(message, parsed, panelContext.selectedModelSlug ?? null);
       }
 
-      if (panelContext?.selectedThreadId) {
+      if (panelContext?.pendingComposeMode === "project_session_command") {
+        if (!prompt) {
+          return this.handleCommandGuidance(message, "ambiguous_command");
+        }
+
+        if (!panelContext.selectedProjectPath) {
+          return this.handleCommandGuidance(message, "session_required");
+        }
+
         const parsed: ParsedCommand = {
-          sessionId: panelContext.selectedThreadId,
+          sessionId: null,
+          newSession: true,
           prompt,
           threadAlias: null,
           threadSelector: null,
+          sourcePlatform: "feishu",
+          senderId: message.senderId,
+          platformMessageId: message.messageId
+        };
+
+        return this.executeParsedCommand(message, parsed, panelContext.selectedModelSlug ?? null);
+      }
+
+      if (panelContext?.selectedThreadId) {
+        const parsed: ParsedCommand = {
+          sessionId: panelContext.selectedThreadId,
+          newSession: false,
+          prompt,
+          threadAlias: null,
+          threadSelector: panelContext.selectedThreadId,
           sourcePlatform: "feishu",
           senderId: message.senderId,
           platformMessageId: message.messageId
@@ -171,7 +199,11 @@ export class FeishuWebhookService {
         eventId: message.eventId,
         text: ""
       },
-      panelCommand
+      panelCommand,
+      {
+        refresh: false,
+        awaitNotify: false
+      }
     );
   }
 
@@ -283,11 +315,21 @@ export class FeishuWebhookService {
     };
   }
 
-  private async handlePanelCommand(message: FeishuIncomingMessage, command: FeishuPanelCommand) {
+  private async handlePanelCommand(
+    message: FeishuIncomingMessage,
+    command: FeishuPanelCommand,
+    input: {
+      refresh?: boolean;
+      awaitNotify?: boolean;
+    } = {}
+  ) {
     const panelService = this.deps.feishuCommandPanelService;
     if (!panelService) {
       return this.handleCommandGuidance(message, "ambiguous_command");
     }
+
+    const refresh = input.refresh ?? true;
+    const awaitNotify = input.awaitNotify ?? true;
 
     if (command.actionType === "help") {
       return this.handleCommandGuidance(message, "ambiguous_command");
@@ -306,9 +348,10 @@ export class FeishuWebhookService {
 
       const parsed: ParsedCommand = {
         sessionId: context.selectedThreadId,
+        newSession: false,
         prompt,
         threadAlias: null,
-        threadSelector: null,
+        threadSelector: context.selectedThreadId,
         sourcePlatform: "feishu",
         senderId: message.senderId,
         platformMessageId: message.messageId
@@ -317,10 +360,52 @@ export class FeishuWebhookService {
       return this.executeParsedCommand(message, parsed, context.selectedModelSlug ?? null);
     }
 
-    const result = await panelService.handlePanelCommand(message.senderId, command, true);
-    const notify = await this.notifyCard({
+    const result = await panelService.handlePanelCommand(message.senderId, command, refresh);
+    const notifyInput = {
       card: result.card,
       recipientOpenId: message.senderId
+    };
+
+    if (!awaitNotify) {
+      const auditCreatedAt = new Date().toISOString();
+      void this.notifyCard(notifyInput)
+        .then(async (notify) => {
+          await this.deps.auditLogRepository.create({
+            eventId: randomUUID(),
+            taskId: null,
+            sessionId: `feishu-panel-${message.senderId}`,
+            action: "feishu_panel_notify_card",
+            actorId: message.senderId,
+            result: this.normalizeNotifyResult(notify),
+            detail: `command=${command.actionType}; sent=${notify.sent}; skipped=${notify.skipped}; reason=${notify.reason || "null"}; statusCode=${notify.statusCode ?? "null"}; refresh=${refresh}; async=true`,
+            createdAt: auditCreatedAt
+          });
+        })
+        .catch(() => undefined);
+
+      return {
+        accepted: true,
+        command: command.actionType,
+        context: result.context,
+        notify: {
+          sent: false,
+          skipped: true,
+          reason: "queued_async",
+          statusCode: null
+        }
+      };
+    }
+
+    const notify = await this.notifyCard(notifyInput);
+    await this.deps.auditLogRepository.create({
+      eventId: randomUUID(),
+      taskId: null,
+      sessionId: `feishu-panel-${message.senderId}`,
+      action: "feishu_panel_notify_card",
+      actorId: message.senderId,
+      result: this.normalizeNotifyResult(notify),
+      detail: `command=${command.actionType}; sent=${notify.sent}; skipped=${notify.skipped}; reason=${notify.reason || "null"}; statusCode=${notify.statusCode ?? "null"}; refresh=${refresh}; async=false`,
+      createdAt: new Date().toISOString()
     });
 
     return {
@@ -340,7 +425,7 @@ export class FeishuWebhookService {
     let sessionId: string;
     let threadRef: string | null;
     try {
-      sessionId = this.resolveSessionId(parsed.sessionId, parsed.senderId, connectorConfig.sessionPrefix);
+      sessionId = parsed.newSession ? randomUUID() : this.resolveSessionId(parsed.sessionId, parsed.senderId, connectorConfig.sessionPrefix);
       threadRef = this.resolveThreadRef(sessionId, parsed.threadSelector);
     } catch (error) {
       if (error instanceof AppError && this.isCommandGuidanceError(error.code)) {
@@ -369,12 +454,20 @@ export class FeishuWebhookService {
       };
     }
 
+    this.deps.terminalEventStream?.feishuCommandReceived({
+      senderId: parsed.senderId,
+      sessionId,
+      threadRef,
+      prompt: parsed.prompt,
+      modelSlug: selectedModelSlug ?? null
+    });
+
     const senderIdentity = await this.deps.feishuIdentityService.ensureAutoIdentity(parsed.senderId);
     const risk = evaluateRisk(parsed.prompt, connectorConfig.riskKeywords);
     const taskId = randomUUID();
     const eventId = randomUUID();
     const existingSession = this.deps.toolSessionRepository.findBySessionId(sessionId);
-    const toolSessionRef = threadRef || existingSession?.toolSessionRef || sessionId;
+    const toolSessionRef = threadRef || existingSession?.toolSessionRef || "";
 
     this.deps.toolSessionRepository.upsert({
       sessionId,

@@ -13,6 +13,7 @@ import { SessionThreadRepository } from "../../storage/repositories/session-thre
 import { TaskRepository, type TaskRecord } from "../../storage/repositories/task-repository";
 import { ToolSessionRepository } from "../../storage/repositories/tool-session-repository";
 import type { TerminalEventStream } from "../../lib/terminal-event-stream";
+import type { CodexRuntimeMeta } from "./codex-runtime-meta";
 
 type CodexEventServiceDeps = {
   taskRepository: TaskRepository;
@@ -37,6 +38,7 @@ export type CodexInboundEvent = {
   detail?: string;
   senderId?: string;
   occurredAt?: string;
+  runtimeMeta?: CodexRuntimeMeta;
 };
 
 export class CodexEventService {
@@ -102,7 +104,7 @@ export class CodexEventService {
       this.deps.toolSessionRepository.create({
         sessionId: updatedTask.sessionId,
         toolProvider: "codex",
-        toolSessionRef: resolvedThreadRef || updatedTask.sessionId,
+        toolSessionRef: resolvedThreadRef || "",
         status: sessionStatus,
         createdBy: senderOpenId,
         createdAt: now,
@@ -164,7 +166,8 @@ export class CodexEventService {
       actorId: senderId,
       recipientOpenId: this.resolveRecipientOpenId(updatedTask.sessionId, senderOpenId),
       threadAlias: threadBinding?.threadAlias ?? null,
-      threadRef: resolvedThreadRef
+      threadRef: resolvedThreadRef,
+      runtimeMeta: event.runtimeMeta ?? null
     });
     this.deps.auditLogRepository.create({
       eventId: randomUUID(),
@@ -378,6 +381,7 @@ export class CodexEventService {
     recipientOpenId: string | null;
     threadAlias?: string | null;
     threadRef?: string | null;
+    runtimeMeta?: CodexRuntimeMeta;
   }) {
     if (!this.deps.feishuNotifier) {
       return {

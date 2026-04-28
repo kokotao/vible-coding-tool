@@ -445,6 +445,87 @@ select {
   animation: slideIn 220ms ease;
 }
 
+.wizard-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(19, 12, 7, 0.44);
+  backdrop-filter: blur(6px);
+  display: grid;
+  place-items: center;
+  z-index: 45;
+  padding: 20px;
+  animation: fadeIn 180ms ease;
+}
+
+.setup-wizard {
+  width: min(860px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(255, 251, 245, 0.98), rgba(247, 240, 231, 0.98));
+  padding: 24px;
+  box-shadow: 0 28px 90px rgba(36, 24, 15, 0.22);
+}
+
+.setup-steps {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-step {
+  border: 1px solid rgba(69, 51, 34, 0.12);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 12px 14px;
+}
+
+.setup-step.done {
+  border-color: rgba(43, 122, 95, 0.32);
+  background: rgba(43, 122, 95, 0.08);
+}
+
+.setup-step.todo {
+  border-color: rgba(201, 137, 33, 0.28);
+  background: rgba(201, 137, 33, 0.08);
+}
+
+.setup-step-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.setup-step p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.setup-commands {
+  display: grid;
+  gap: 8px;
+}
+
+.setup-command-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(69, 51, 34, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 9px 12px;
+}
+
+.setup-command-row code,
+.inline-note code {
+  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: #5a2f1b;
+}
+
 .tabbar {
   display: flex;
   gap: 8px;
@@ -2026,6 +2107,18 @@ select {
   padding: 0 12px;
   color: #645f58;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.lsw-info-btn:disabled,
+.lsw-icon-btn:disabled,
+.lsw-light-btn:disabled,
+.lsw-primary-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .lsw-tabs {
@@ -2533,6 +2626,8 @@ select {
   color: #d4e4ff;
   font-weight: 600;
   font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
   transition: transform 160ms ease, border-color 160ms ease;
 }
 

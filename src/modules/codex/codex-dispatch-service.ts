@@ -9,11 +9,17 @@ import { spawn } from "node:child_process";
 import { AuditLogRepository } from "../../storage/repositories/audit-log-repository";
 import { ToolSessionRepository } from "../../storage/repositories/tool-session-repository";
 import { CodexEventService } from "./codex-event-service";
+import { CodexCliRuntimeService } from "./codex-cli-runtime-service";
+import {
+  parseCodexTokenCountSnapshot,
+  type CodexRuntimeMeta
+} from "./codex-runtime-meta";
 
 type CodexDispatchServiceDeps = {
   codexEventService: CodexEventService;
   auditLogRepository: AuditLogRepository;
   toolSessionRepository: ToolSessionRepository;
+  codexCliRuntimeService: CodexCliRuntimeService;
 };
 
 export type DispatchTaskInput = {
@@ -69,16 +75,30 @@ export class CodexDispatchService {
         command: []
       };
     }
-    const commandArgs = this.buildCommandArgs(prompt, threadRef, modelSlug);
-    const command = [this.options.codexBin, ...commandArgs];
+    const runtimeContext = this.deps.codexCliRuntimeService.prepareDispatchContext();
+    if (!runtimeContext.ready) {
+      return {
+        accepted: false,
+        skipped: true,
+        reason: runtimeContext.reason,
+        pid: null,
+        threadRef,
+        command: []
+      };
+    }
+
+    const commandBin = runtimeContext.codexBin || this.options.codexBin;
+    const commandArgs = this.buildCommandArgs(prompt, threadRef, modelSlug, runtimeContext.extraArgs);
+    const command = [commandBin, ...commandArgs];
     const now = new Date().toISOString();
+    const startedAtMs = Date.now();
 
     let settled = false;
 
     try {
-      const child = spawn(this.options.codexBin, commandArgs, {
+      const child = spawn(commandBin, commandArgs, {
         cwd: process.cwd(),
-        env: process.env,
+        env: runtimeContext.env,
         stdio: ["ignore", "pipe", "pipe"],
         detached: true
       });
@@ -87,12 +107,12 @@ export class CodexDispatchService {
       let stderrTail = "";
       const tailLimit = 30_000;
 
-      child.stdout.on("data", (chunk) => {
+      child.stdout?.on("data", (chunk) => {
         const text = String(chunk);
         stdoutTail = `${stdoutTail}${text}`.slice(-tailLimit);
       });
 
-      child.stderr.on("data", (chunk) => {
+      child.stderr?.on("data", (chunk) => {
         const text = String(chunk);
         stderrTail = `${stderrTail}${text}`.slice(-tailLimit);
       });
@@ -105,7 +125,11 @@ export class CodexDispatchService {
         void this.emitDispatchFailedEvent(
           input,
           threadRef,
-          `dispatch spawn failed: ${error instanceof Error ? error.message : String(error)}`
+          `dispatch spawn failed: ${error instanceof Error ? error.message : String(error)}`,
+          {
+            durationMs: Date.now() - startedAtMs,
+            modelSlug
+          }
         );
       });
 
@@ -116,7 +140,8 @@ export class CodexDispatchService {
         settled = true;
         const mergedOutput = `${stdoutTail}\n${stderrTail}`.trim();
         const resolvedThreadRef = this.extractThreadRef(mergedOutput) || threadRef;
-        void this.emitCloseEvent(input, code ?? 1, mergedOutput, resolvedThreadRef);
+        const runtimeMeta = this.extractRuntimeMeta(mergedOutput, modelSlug, Date.now() - startedAtMs);
+        void this.emitCloseEvent(input, code ?? 1, mergedOutput, resolvedThreadRef, runtimeMeta);
       });
 
       child.unref();
@@ -128,9 +153,9 @@ export class CodexDispatchService {
         action: "dispatch_task",
         actorId: input.actorId,
         result: "accepted",
-          detail: `pid=${child.pid ?? "unknown"}; thread=${threadRef || "new"}; model=${modelSlug || "default"}; cmd=${command.join(" ")}`,
-          createdAt: now
-        });
+        detail: `pid=${child.pid ?? "unknown"}; thread=${threadRef || "new"}; model=${modelSlug || "default"}; cmd=${command.join(" ")}; trusted=${runtimeContext.authorization.trustedInConfig}; trustUpdated=${runtimeContext.authorization.trustUpdated}; trustWarning=${runtimeContext.authorization.warning || "none"}`,
+        createdAt: now
+      });
 
       return {
         accepted: true,
@@ -144,7 +169,11 @@ export class CodexDispatchService {
       void this.emitDispatchFailedEvent(
         input,
         threadRef,
-        `dispatch exception: ${error instanceof Error ? error.message : String(error)}`
+        `dispatch exception: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          durationMs: Date.now() - startedAtMs,
+          modelSlug
+        }
       );
       return {
         accepted: false,
@@ -172,8 +201,17 @@ export class CodexDispatchService {
     return null;
   }
 
-  private buildCommandArgs(prompt: string, threadRef: string | null, modelSlug: string | null) {
-    const args = ["exec", "--json"];
+  private buildCommandArgs(
+    prompt: string,
+    threadRef: string | null,
+    modelSlug: string | null,
+    accessArgs: string[]
+  ) {
+    const args: string[] = [];
+    if (accessArgs.length > 0) {
+      args.push(...accessArgs);
+    }
+    args.push("exec", "--json");
     if (this.options.skipGitRepoCheck) {
       args.push("--skip-git-repo-check");
     }
@@ -248,6 +286,44 @@ export class CodexDispatchService {
     return output;
   }
 
+  private extractRuntimeMeta(raw: string, modelSlug: string | null, durationMs: number) {
+    let latestTokenCount: ReturnType<typeof parseCodexTokenCountSnapshot> | null = null;
+
+    for (const line of raw.split(/\r?\n/)) {
+      const text = line.trim();
+      if (!text.startsWith("{")) {
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(text) as {
+          type?: string;
+          payload?: Record<string, unknown>;
+          info?: Record<string, unknown>;
+        };
+
+        if (parsed.type !== "token_count") {
+          continue;
+        }
+
+        const snapshot = parseCodexTokenCountSnapshot(parsed);
+        if (snapshot) {
+          latestTokenCount = snapshot;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return {
+      durationMs,
+      tokenUsage: latestTokenCount?.totalUsage?.totalTokens ?? null,
+      tokenUsageDetail: latestTokenCount?.totalUsage ?? null,
+      lastTokenUsageDetail: latestTokenCount?.lastUsage ?? null,
+      modelSlug
+    } satisfies CodexRuntimeMeta;
+  }
+
   private sanitizeText(value: string, maxLength: number) {
     const cleaned = value.replace(/\u0000/g, "").trim();
     if (!cleaned) {
@@ -259,7 +335,12 @@ export class CodexDispatchService {
     return `${cleaned.slice(0, maxLength - 3)}...`;
   }
 
-  private async emitDispatchFailedEvent(input: DispatchTaskInput, threadRef: string | null, detail: string) {
+  private async emitDispatchFailedEvent(
+    input: DispatchTaskInput,
+    threadRef: string | null,
+    detail: string,
+    runtimeMeta?: CodexRuntimeMeta
+  ) {
     const now = new Date().toISOString();
     await this.deps.codexEventService.handleEvent({
       eventId: randomUUID(),
@@ -270,7 +351,8 @@ export class CodexDispatchService {
       summary: "Codex任务失败：调度异常",
       detail: this.sanitizeText(detail, 1800),
       senderId: "codex_dispatcher",
-      occurredAt: now
+      occurredAt: now,
+      runtimeMeta: runtimeMeta ?? null
     });
   }
 
@@ -278,7 +360,8 @@ export class CodexDispatchService {
     input: DispatchTaskInput,
     exitCode: number,
     output: string,
-    threadRef: string | null
+    threadRef: string | null,
+    runtimeMeta?: CodexRuntimeMeta
   ) {
     const now = new Date().toISOString();
     const finalMessage = this.extractFinalAgentMessage(output);
@@ -294,7 +377,8 @@ export class CodexDispatchService {
         summary: `Codex任务完成：${this.sanitizeText(finalMessage || "OK", 120)}`,
         detail: detail || "OK",
         senderId: "codex_dispatcher",
-        occurredAt: now
+        occurredAt: now,
+        runtimeMeta: runtimeMeta ?? null
       });
       return;
     }
@@ -308,7 +392,8 @@ export class CodexDispatchService {
       summary: `Codex任务失败：exit=${exitCode}`,
       detail: detail || `codex exited with code ${exitCode}`,
       senderId: "codex_dispatcher",
-      occurredAt: now
+      occurredAt: now,
+      runtimeMeta: runtimeMeta ?? null
     });
   }
 }

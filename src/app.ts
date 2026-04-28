@@ -1,15 +1,17 @@
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mergeEnv, type AppEnv } from "./config/env";
 import { AppError } from "./lib/errors";
 import { createLoggerOptions } from "./lib/logger";
+import type { TerminalEventStream } from "./lib/terminal-event-stream";
 import { ConnectorConfigService } from "./modules/connectors/connector-config-service";
 import { ConnectorService } from "./modules/connectors/connector-service";
 import { CodexDispatchService } from "./modules/codex/codex-dispatch-service";
 import { CodexEventService } from "./modules/codex/codex-event-service";
+import { CodexCliRuntimeService } from "./modules/codex/codex-cli-runtime-service";
 import { CodexLocalSessionService } from "./modules/codex/codex-local-session-service";
 import { CodexModelCatalogService } from "./modules/codex/codex-model-catalog-service";
 import { CodexQueryService } from "./modules/codex/codex-query-service";
@@ -29,6 +31,7 @@ import { registerFeishuRoutes } from "./routes/feishu";
 import { registerHealthRoute } from "./routes/health";
 import { registerRiskRoutes } from "./routes/risks";
 import { registerSessionRoutes } from "./routes/sessions";
+import { registerSystemRoutes } from "./routes/system";
 import { registerTaskRoutes } from "./routes/tasks";
 import { AuditLogRepository } from "./storage/repositories/audit-log-repository";
 import { ConnectorConfigRepository } from "./storage/repositories/connector-config-repository";
@@ -46,7 +49,18 @@ export type BuildAppOptions = {
   env?: Partial<AppEnv>;
   db?: SqliteDatabase;
   fetchImpl?: typeof fetch;
+  codexCliRuntimeService?: CodexCliRuntimeService;
+  terminalEventStream?: TerminalEventStream;
 };
+
+function resolvePublicRoot(): string {
+  const candidates = [
+    resolve(process.cwd(), "public"),
+    resolve(__dirname, "..", "public"),
+    resolve(__dirname, "..", "..", "public")
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const env = mergeEnv(options.env);
@@ -66,7 +80,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const feishuNotifier = new FeishuOutboundNotifier(connectorConfigService, {
     openBaseUrl: env.feishuOpenBaseUrl,
     fetchImpl: options.fetchImpl,
-    idempotencyRepository
+    idempotencyRepository,
+    feishuIdentityRepository
   });
   const codexLocalSessionService = env.codexLocalSessionsScanEnabled
     ? new CodexLocalSessionService({
@@ -84,6 +99,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const codexModelCatalogService = new CodexModelCatalogService({
     codexBin: env.codexCliBin
   });
+  const codexCliRuntimeService =
+    options.codexCliRuntimeService ||
+    new CodexCliRuntimeService({
+      codexBin: env.codexCliBin,
+      projectRoot: process.cwd()
+    });
   const feishuCommandPanelService = new FeishuCommandPanelService({
     contextRepository: feishuPanelContextRepository,
     codexLocalSessionService: codexLocalSessionService ?? undefined,
@@ -103,13 +124,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     auditLogRepository,
     idempotencyRepository,
     sessionThreadRepository,
-    feishuNotifier
+    feishuNotifier,
+    terminalEventStream: options.terminalEventStream
   });
   const codexDispatchService = new CodexDispatchService(
     {
       codexEventService,
       auditLogRepository,
-      toolSessionRepository
+      toolSessionRepository,
+      codexCliRuntimeService
     },
     {
       enabled: env.codexAutoDispatchEnabled,
@@ -134,16 +157,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     feishuNotifier
   });
 
+  codexCliRuntimeService.initialize({
+    codexLocalSessionService
+  });
+
   migrateDatabase(db);
   connectorConfigService.ensureDefaults();
 
   const app = Fastify({
-    logger: createLoggerOptions(env.logLevel)
+    logger: createLoggerOptions(env.logLevel, env.logDir, env.logRetentionDays),
+    disableRequestLogging: true
   });
+  const publicRoot = resolvePublicRoot();
 
   app.decorate("db", db);
   void app.register(fastifyStatic, {
-    root: resolve(process.cwd(), "public"),
+    root: publicRoot,
     prefix: "/"
   });
 
@@ -190,6 +219,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
   );
   registerConnectorRoutes(app, connectorConfigService);
+  registerSystemRoutes(app, codexCliRuntimeService);
   registerRiskRoutes(app, lightOpsService);
   registerFeishuRoutes(
     app,
@@ -206,18 +236,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       feishuNotifier,
       feishuIdentityService,
       feishuCommandPanelService,
-      codexLocalSessionService: codexLocalSessionService ?? undefined
+      codexLocalSessionService: codexLocalSessionService ?? undefined,
+      terminalEventStream: options.terminalEventStream
     }),
     feishuDirectoryService,
     env.feishuVerifyToken,
     env.feishuEncryptKey
   );
   app.get("/", async (_request, reply) => {
-    return reply.type("text/html; charset=utf-8").send(readFileSync(resolve(process.cwd(), "public", "index.html"), "utf8"));
+    return reply.type("text/html; charset=utf-8").send(readFileSync(resolve(publicRoot, "index.html"), "utf8"));
   });
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AppError) {
+      if (error.statusCode >= 500) {
+        options.terminalEventStream?.error(`HTTP ${error.statusCode}`, error);
+      }
       void reply.status(error.statusCode).send({
         code: error.code,
         message: error.message
@@ -226,6 +260,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
 
     app.log.error(error);
+    options.terminalEventStream?.error("HTTP 500", error);
     void reply.status(500).send({
       code: "INTERNAL_SERVER_ERROR",
       message: "Unexpected server error"

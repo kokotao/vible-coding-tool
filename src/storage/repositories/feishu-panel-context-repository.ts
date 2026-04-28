@@ -14,7 +14,7 @@ export type FeishuPanelCurrentView =
   | "gateway_status"
   | "selection";
 
-export type FeishuPanelComposeMode = "session_command" | "thread_command";
+export type FeishuPanelComposeMode = "session_command" | "thread_command" | "project_session_command";
 
 export type FeishuPanelContextRecord = {
   openId: string;

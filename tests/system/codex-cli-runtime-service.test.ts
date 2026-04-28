@@ -1,0 +1,194 @@
+import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+async function loadRuntimeServiceWithChildProcessMock(
+  execFileSyncImpl: (file: string, args?: readonly string[]) => string,
+  spawnImpl?: (...args: any[]) => any
+) {
+  vi.resetModules();
+  vi.doMock("node:child_process", () => ({
+    execFileSync: execFileSyncImpl,
+    spawn: (spawnImpl || vi.fn()) as any
+  }));
+  return (await import("../../src/modules/codex/codex-cli-runtime-service")).CodexCliRuntimeService;
+}
+
+describe("codex cli runtime service", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    vi.unmock("node:child_process");
+    vi.useRealTimers();
+  });
+
+  it("prefers direct 'codex --version' probing on windows", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "codex-runtime-win-"));
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    const CodexCliRuntimeService = await loadRuntimeServiceWithChildProcessMock((file: string, args?: readonly string[]) => {
+      const argv = Array.isArray(args) ? args : [];
+      if (file === "cmd.exe" && argv.includes("codex --version")) {
+        return "codex-cli 0.125.0\n";
+      }
+      throw new Error("not found");
+    });
+
+    try {
+      const runtimeService = new CodexCliRuntimeService({
+        codexBin: "__missing_codex_binary__",
+        projectRoot: workspaceRoot
+      });
+
+      const status = runtimeService.getStatus({ refresh: true });
+      expect(status.installed).toBe(true);
+      expect(status.version).toBe("codex-cli 0.125.0");
+      expect(status.resolvedCodexBin).toBe("codex");
+      expect(status.detectionMessage).toBeNull();
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to candidate probing when direct windows probe fails", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "codex-runtime-fallback-"));
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    const CodexCliRuntimeService = await loadRuntimeServiceWithChildProcessMock((file: string, args?: readonly string[]) => {
+      const argv = Array.isArray(args) ? args : [];
+      if (file !== "cmd.exe") {
+        throw new Error("not found");
+      }
+      if (argv.includes("codex --version")) {
+        throw new Error("direct probe failed");
+      }
+      const rawCommand = argv[argv.length - 1] || "";
+      if (rawCommand.includes("codex.cmd") && rawCommand.includes("--version")) {
+        return "codex-cli 0.126.0\n";
+      }
+      throw new Error("not found");
+    });
+
+    try {
+      const runtimeService = new CodexCliRuntimeService({
+        codexBin: "C:\\tools\\codex.cmd",
+        projectRoot: workspaceRoot
+      });
+
+      const status = runtimeService.getStatus({ refresh: true });
+      expect(status.installed).toBe(true);
+      expect(status.version).toBe("codex-cli 0.126.0");
+      expect(status.resolvedCodexBin).toBe("C:\\tools\\codex.cmd");
+      expect(status.detectionMessage).toBeNull();
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("runs availability probe at startup and updates setup step3 by probe result", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "codex-runtime-probe-"));
+    const CodexCliRuntimeService = await loadRuntimeServiceWithChildProcessMock(() => {
+      throw new Error("not found");
+    });
+
+    try {
+      const runtimeService = new CodexCliRuntimeService({
+        codexBin: "__missing_codex_binary__",
+        projectRoot: workspaceRoot,
+        apiProbe: async () => ({
+          success: true,
+          checkedAt: "2026-04-28T07:00:00.000Z",
+          message: "probe ok",
+          target: "codex exec --ephemeral --skip-git-repo-check"
+        })
+      });
+
+      const status = await runtimeService.probeAvailabilityAtStartup();
+      expect(status.apiConfig.usable).toBe(true);
+      const step3 = status.setupWizard.steps.find((item) => item.id === "configure_api");
+      expect(step3?.completed).toBe(true);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("waits 120 seconds before timing out the availability probe", async () => {
+    vi.useFakeTimers();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "codex-runtime-timeout-"));
+    const persistedConfigPath = join(workspaceRoot, "codex-runtime-config.json");
+    writeFileSync(
+      persistedConfigPath,
+      JSON.stringify(
+        {
+          apiBaseUrl: "https://gateway.example.com/v1",
+          apiKey: "sk-test-1234567890",
+          updatedAt: "2026-04-28T07:00:00.000Z",
+          apiProbePassed: false,
+          apiProbeCheckedAt: "",
+          apiProbeMessage: "",
+          apiProbeTarget: ""
+        },
+        null,
+        2
+      )
+    );
+
+    type ProbeSpawnChild = EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+    };
+    let spawnedChild: ProbeSpawnChild | null = null;
+    let killMock: ReturnType<typeof vi.fn> | null = null;
+    const spawnImpl = vi.fn(() => {
+      const child = new EventEmitter() as ProbeSpawnChild;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      killMock = vi.fn();
+      (child as ProbeSpawnChild & { kill: ReturnType<typeof vi.fn> }).kill = killMock;
+      spawnedChild = child;
+      return child;
+    });
+
+    const CodexCliRuntimeService = await loadRuntimeServiceWithChildProcessMock((file: string, args?: readonly string[]) => {
+      const argv = Array.isArray(args) ? args : [];
+      if (file === "codex" && argv.includes("--version")) {
+        return "codex-cli 0.125.0\n";
+      }
+      throw new Error(`unexpected command: ${file} ${argv.join(" ")}`);
+    }, spawnImpl as (...args: any[]) => any);
+
+    try {
+      const runtimeService = new CodexCliRuntimeService({
+        codexBin: "codex",
+        projectRoot: workspaceRoot,
+        persistedConfigPath
+      });
+
+      let resolvedStatus: Awaited<ReturnType<typeof runtimeService.probeAvailabilityAtStartup>> | null = null;
+      const probePromise = runtimeService.probeAvailabilityAtStartup().then((status) => {
+        resolvedStatus = status;
+        return status;
+      });
+
+      await vi.advanceTimersByTimeAsync(119_000);
+      const activeChild = spawnedChild;
+      expect(spawnImpl).toHaveBeenCalledTimes(1);
+      if (!activeChild) {
+        throw new Error("expected probe child to be spawned");
+      }
+      expect(killMock).not.toBeNull();
+      expect(killMock).not.toHaveBeenCalled();
+      expect(resolvedStatus).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      const status = await probePromise;
+
+      expect(killMock).toHaveBeenCalledWith("SIGTERM");
+      expect(status.apiConfig.usable).toBe(false);
+      expect(status.apiConfig.probeMessage).toBe("Codex 探测失败：Codex 探测超时");
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});

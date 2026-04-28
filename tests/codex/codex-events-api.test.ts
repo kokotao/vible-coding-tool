@@ -133,7 +133,26 @@ describe("codex events api", () => {
           status: "succeeded",
           summary: "all checks passed",
           detail: longDetail,
-          senderId: "codex_runner"
+          senderId: "codex_runner",
+          runtimeMeta: {
+            durationMs: 125000,
+            tokenUsage: 4876,
+            modelSlug: "gpt-5.4",
+            tokenUsageDetail: {
+              inputTokens: 4000,
+              cachedInputTokens: 500,
+              outputTokens: 300,
+              reasoningOutputTokens: 76,
+              totalTokens: 4876
+            },
+            lastTokenUsageDetail: {
+              inputTokens: 900,
+              cachedInputTokens: 120,
+              outputTokens: 380,
+              reasoningOutputTokens: 80,
+              totalTokens: 1480
+            }
+          }
         }
       });
 
@@ -204,9 +223,118 @@ describe("codex events api", () => {
       expect(outboundPayload.content).toContain("-DETAIL-END-MARKER");
       expect(outboundPayload.content).toContain("选择此会话");
       expect(outboundPayload.content).toContain("\"panelAction\":\"select_session\"");
+      expect(outboundPayload.content).toContain("该次任务耗时");
+      expect(outboundPayload.content).toContain("消耗 tokens");
+      expect(outboundPayload.content).toContain("使用模型");
+      expect(outboundPayload.content).toContain("gpt-5.4");
+      expect(outboundPayload.content).toContain("累计明细");
+      expect(outboundPayload.content).toContain("最近一次");
+      expect(outboundPayload.content).toContain("cached_input 500");
+      expect(outboundPayload.content).toContain("reasoning_output 76");
       expect(outboundPayload.content).not.toContain("任务标题：");
       expect(outboundPayload.content).not.toContain("完成内容：");
       expect((outboundPayload.content.match(/任务状态：/g) || []).length).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts nullable runtime meta and still renders the footer note", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    const sessions = new ToolSessionRepository(db);
+    const tasks = new TaskRepository(db);
+    const now = new Date("2026-04-26T10:20:00.000Z").toISOString();
+
+    sessions.create({
+      sessionId: "codex-session-null-meta",
+      toolProvider: "codex",
+      toolSessionRef: "codex-runtime-null-meta",
+      status: "running",
+      createdBy: "ou_target_user",
+      createdAt: now,
+      updatedAt: now
+    });
+
+    tasks.create({
+      taskId: "task-codex-null-meta",
+      sessionId: "codex-session-null-meta",
+      triggerMessageId: null,
+      taskType: "command",
+      status: "running",
+      summary: "initial summary",
+      startedAt: now,
+      finishedAt: null
+    });
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const currentConfig = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...(currentConfig.json() as Record<string, unknown>),
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: "",
+          templateTaskStarted: "任务开始",
+          templateTaskSucceeded: "任务成功",
+          templateTaskFailed: "任务失败",
+          templateTaskPendingConfirm: "请确认"
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/codex/events",
+        payload: {
+          eventId: "codex-evt-null-meta",
+          taskId: "task-codex-null-meta",
+          sessionId: "codex-session-null-meta",
+          status: "succeeded",
+          summary: "all checks passed",
+          detail: "finished",
+          senderId: "codex_runner",
+          runtimeMeta: {
+            durationMs: null,
+            tokenUsage: null,
+            modelSlug: null,
+            tokenUsageDetail: null,
+            lastTokenUsageDetail: null
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        accepted: true,
+        duplicate: false
+      });
+
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+      const outboundPayload = JSON.parse(mockOpenApi.messageBodies[0]) as {
+        content: string;
+      };
+      expect(outboundPayload.content).toContain("该次任务耗时：--");
+      expect(outboundPayload.content).toContain("消耗 tokens：--");
+      expect(outboundPayload.content).toContain("使用模型：--");
     } finally {
       await app.close();
     }

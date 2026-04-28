@@ -75,8 +75,55 @@ describe("codex global watcher", () => {
           rolloutPath,
           [
             JSON.stringify({
+              timestamp: "2026-04-27T09:59:59.000Z",
+              type: "session_meta",
+              payload: {
+                id: "019dca61-0d90-7f01-b1b0-f1bb79eb955e",
+                timestamp: "2026-04-27T09:59:50.000Z",
+                cwd: "/Users/albertluo/workSpace/albertLuo/vible-coding-Tool",
+                model: "gpt-5.4"
+              }
+            }),
+            JSON.stringify({
+              timestamp: "2026-04-27T09:59:59.500Z",
               type: "event_msg",
-              timestamp: "2026-04-27T10:00:00.000Z",
+              payload: {
+                type: "task_started",
+                turn_id: "turn-001",
+                started_at: 1777095599
+              }
+            }),
+            JSON.stringify({
+              timestamp: "2026-04-27T09:59:59.800Z",
+              type: "turn_context",
+              payload: {
+                turn_id: "turn-001",
+                model: "gpt-5.4"
+              }
+            }),
+            JSON.stringify({
+              timestamp: "2026-04-27T10:00:02.500Z",
+              type: "token_count",
+              info: {
+                total_token_usage: {
+                  input_tokens: 40000,
+                  cached_input_tokens: 2000,
+                  output_tokens: 1000,
+                  reasoning_output_tokens: 210,
+                  total_tokens: 43210
+                },
+                last_token_usage: {
+                  input_tokens: 900,
+                  cached_input_tokens: 120,
+                  output_tokens: 380,
+                  reasoning_output_tokens: 60,
+                  total_tokens: 1280,
+                }
+              }
+            }),
+            JSON.stringify({
+              type: "event_msg",
+              timestamp: "2026-04-27T10:00:02.500Z",
               payload: {
                 type: "task_complete",
                 turn_id: "turn-001",
@@ -108,11 +155,53 @@ describe("codex global watcher", () => {
         });
 
         expect(seenBodies).toHaveLength(1);
-        const postedPayload = JSON.parse(seenBodies[0]) as { senderId?: string; taskId?: string; summary?: string };
+        const postedPayload = JSON.parse(seenBodies[0]) as {
+          senderId?: string;
+          taskId?: string;
+          summary?: string;
+          runtimeMeta?: {
+            durationMs?: number;
+            tokenUsage?: number;
+            modelSlug?: string;
+            tokenUsageDetail?: {
+              inputTokens?: number;
+              cachedInputTokens?: number;
+              outputTokens?: number;
+              reasoningOutputTokens?: number;
+              totalTokens?: number;
+            };
+            lastTokenUsageDetail?: {
+              inputTokens?: number;
+              cachedInputTokens?: number;
+              outputTokens?: number;
+              reasoningOutputTokens?: number;
+              totalTokens?: number;
+            };
+          };
+        };
         expect(postedPayload.senderId).toBe("ou_recent_sender");
         expect(postedPayload.taskId).toBe("codex-turn-turn-001");
         expect(seenBodies[0]).toContain("Codex任务完成");
         expect(seenBodies[0]).toContain("完成了自动回推测试");
+        expect(postedPayload.runtimeMeta).toMatchObject({
+          modelSlug: "gpt-5.4",
+          tokenUsage: 43210
+        });
+        expect(postedPayload.runtimeMeta?.tokenUsageDetail).toMatchObject({
+          inputTokens: 40000,
+          cachedInputTokens: 2000,
+          outputTokens: 1000,
+          reasoningOutputTokens: 210,
+          totalTokens: 43210
+        });
+        expect(postedPayload.runtimeMeta?.lastTokenUsageDetail).toMatchObject({
+          inputTokens: 900,
+          cachedInputTokens: 120,
+          outputTokens: 380,
+          reasoningOutputTokens: 60,
+          totalTokens: 1280
+        });
+        expect(postedPayload.runtimeMeta?.durationMs).toBe(12500);
       } finally {
         await watcher.stop();
       }

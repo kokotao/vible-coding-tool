@@ -9,6 +9,7 @@ import { parseFeishuPanelCommand } from "./feishu-command-panel";
 
 export type ParsedCommand = {
   sessionId: string | null;
+  newSession: boolean;
   prompt: string;
   threadAlias: string | null;
   threadSelector: string | null;
@@ -88,6 +89,12 @@ export const FEISHU_COMMAND_HELP_ITEMS: FeishuCommandHelpItem[] = [
     example: "查看当前项目session"
   },
   {
+    title: "新建 Session",
+    syntax: "新建 session",
+    description: "在当前项目下创建一个新的 Codex 会话，随后可直接发送任务内容",
+    example: "新建 session"
+  },
+  {
     title: "选择 Session",
     syntax: "选择 session：<threadId>",
     description: "锁定一个具体 Codex thread，后续直接发送任务内容即可执行",
@@ -132,6 +139,7 @@ export function buildFeishuCommandHelpText(reason: FeishuCommandHelpReason = "am
     "请使用以下任一格式：",
     ...FEISHU_COMMAND_HELP_ITEMS.map((item, index) => `${index + 1}. ${item.syntax} - ${item.description}`),
     "如果你想继续已有会话，也请直接带上 #session:<id>。",
+    "如果你想在当前项目下新建会话，请先 `查看项目` -> `选择项目` -> `新建 session`，然后直接发送任务内容。",
     "如果你想用连续选择流程，先 `查看项目`，再 `选择项目`，再 `选择 session`，最后直接发送任务内容。",
     "如果你只是想绑定姓名，可以直接发：绑定姓名：张三"
   ].join("\n");
@@ -238,6 +246,7 @@ export function parseFeishuCommand(input: {
 
   return {
     sessionId: sessionMatched?.[1] || null,
+    newSession: false,
     prompt,
     threadAlias,
     threadSelector,
