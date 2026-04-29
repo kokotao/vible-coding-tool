@@ -6,6 +6,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
+import { extname, isAbsolute, resolve } from "node:path";
 import { AuditLogRepository } from "../../storage/repositories/audit-log-repository";
 import { ToolSessionRepository } from "../../storage/repositories/tool-session-repository";
 import { CodexEventService } from "./codex-event-service";
@@ -22,6 +24,11 @@ type CodexDispatchServiceDeps = {
   codexCliRuntimeService: CodexCliRuntimeService;
 };
 
+type SpawnInvocation = {
+  command: string;
+  args: string[];
+};
+
 export type DispatchTaskInput = {
   taskId: string;
   sessionId: string;
@@ -29,6 +36,7 @@ export type DispatchTaskInput = {
   actorId: string;
   threadRef?: string | null;
   modelSlug?: string | null;
+  projectPath?: string | null;
 };
 
 export type DispatchTaskResult = {
@@ -86,9 +94,21 @@ export class CodexDispatchService {
         command: []
       };
     }
+    const workingDirectory = this.resolveWorkingDirectory(input.projectPath ?? null);
+    if (!workingDirectory) {
+      return {
+        accepted: false,
+        skipped: true,
+        reason: "project_path_not_found",
+        pid: null,
+        threadRef,
+        command: []
+      };
+    }
 
     const commandBin = runtimeContext.codexBin || this.options.codexBin;
     const commandArgs = this.buildCommandArgs(prompt, threadRef, modelSlug, runtimeContext.extraArgs);
+    const spawnInvocation = this.resolveSpawnInvocation(commandBin, commandArgs);
     const command = [commandBin, ...commandArgs];
     const now = new Date().toISOString();
     const startedAtMs = Date.now();
@@ -96,11 +116,12 @@ export class CodexDispatchService {
     let settled = false;
 
     try {
-      const child = spawn(commandBin, commandArgs, {
-        cwd: process.cwd(),
+      const child = spawn(spawnInvocation.command, spawnInvocation.args, {
+        cwd: workingDirectory,
         env: runtimeContext.env,
         stdio: ["ignore", "pipe", "pipe"],
-        detached: true
+        detached: true,
+        windowsHide: process.platform === "win32"
       });
 
       let stdoutTail = "";
@@ -153,7 +174,7 @@ export class CodexDispatchService {
         action: "dispatch_task",
         actorId: input.actorId,
         result: "accepted",
-        detail: `pid=${child.pid ?? "unknown"}; thread=${threadRef || "new"}; model=${modelSlug || "default"}; cmd=${command.join(" ")}; trusted=${runtimeContext.authorization.trustedInConfig}; trustUpdated=${runtimeContext.authorization.trustUpdated}; trustWarning=${runtimeContext.authorization.warning || "none"}`,
+        detail: `pid=${child.pid ?? "unknown"}; thread=${threadRef || "new"}; model=${modelSlug || "default"}; cwd=${workingDirectory}; cmd=${command.join(" ")}; trusted=${runtimeContext.authorization.trustedInConfig}; trustUpdated=${runtimeContext.authorization.trustUpdated}; trustWarning=${runtimeContext.authorization.warning || "none"}`,
         createdAt: now
       });
 
@@ -201,6 +222,31 @@ export class CodexDispatchService {
     return null;
   }
 
+  private resolveWorkingDirectory(projectPath: string | null) {
+    const normalized = (projectPath || "").trim();
+    if (!normalized) {
+      return process.cwd();
+    }
+
+    const expandedHome =
+      normalized.startsWith("~/") && process.env.HOME
+        ? resolve(process.env.HOME, normalized.slice(2))
+        : normalized;
+    const candidate = isAbsolute(expandedHome) ? expandedHome : resolve(process.cwd(), expandedHome);
+    if (!this.isDirectory(candidate)) {
+      return null;
+    }
+    return candidate;
+  }
+
+  private isDirectory(path: string) {
+    try {
+      return statSync(path).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
   private buildCommandArgs(
     prompt: string,
     threadRef: string | null,
@@ -227,6 +273,39 @@ export class CodexDispatchService {
 
     args.push(prompt);
     return args;
+  }
+
+  private resolveSpawnInvocation(commandBin: string, commandArgs: string[]): SpawnInvocation {
+    if (process.platform !== "win32") {
+      return {
+        command: commandBin,
+        args: commandArgs
+      };
+    }
+
+    const ext = extname(commandBin).toLowerCase();
+    const useCmdWrapper = ext === ".cmd" || ext === ".bat" || ext.length === 0;
+    if (!useCmdWrapper) {
+      return {
+        command: commandBin,
+        args: commandArgs
+      };
+    }
+
+    const cmdline = this.buildWindowsCmdline(commandBin, commandArgs);
+    return {
+      command: "cmd.exe",
+      args: ["/d", "/s", "/c", cmdline]
+    };
+  }
+
+  private buildWindowsCmdline(commandBin: string, commandArgs: string[]) {
+    return [this.quoteWindowsArg(commandBin), ...commandArgs.map((arg) => this.quoteWindowsArg(arg))].join(" ");
+  }
+
+  private quoteWindowsArg(value: string) {
+    const sanitized = value.replace(/\r?\n/g, " ").replaceAll("%", "%%").replaceAll('"', '""');
+    return `"${sanitized}"`;
   }
 
   private isThreadRef(value: string) {

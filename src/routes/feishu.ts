@@ -27,6 +27,17 @@ type FeishuWebhookBody = {
       message_id?: string;
       message_type?: string;
       content?: string;
+      chat_id?: string;
+      chat_type?: string;
+      mentions?: Array<{
+        id?: {
+          open_id?: string;
+          user_id?: string;
+          union_id?: string;
+        };
+        key?: string;
+        name?: string;
+      }>;
     };
     action?: {
       tag?: string;
@@ -65,15 +76,39 @@ const sendMessageSchema = z.object({
 });
 
 function decodeFeishuMessageContent(raw: string | undefined) {
+  const fallback = {
+    text: "",
+    hasMentionTag: false,
+    mentionOpenIds: [] as string[]
+  };
+
   if (!raw) {
-    return "";
+    return fallback;
   }
 
   try {
-    const parsed = JSON.parse(raw) as { text?: string };
-    return parsed.text ?? "";
+    const parsed = JSON.parse(raw) as {
+      text?: string;
+      mentions?: Array<{
+        id?: {
+          open_id?: string;
+          user_id?: string;
+          union_id?: string;
+        };
+      }>;
+    };
+    const mentionOpenIds = (parsed.mentions || [])
+      .map((item) => item.id?.open_id || item.id?.user_id || item.id?.union_id || "")
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    return {
+      text: parsed.text ?? "",
+      hasMentionTag: /<at\b/i.test(parsed.text ?? ""),
+      mentionOpenIds
+    };
   } catch {
-    return "";
+    return fallback;
   }
 }
 
@@ -177,7 +212,17 @@ export function registerFeishuRoutes(
       };
     }
 
-    const text = decodeFeishuMessageContent(message.content);
+    const decoded = decodeFeishuMessageContent(message.content);
+    const openChatId = message.chat_id || event.context?.open_chat_id || null;
+    const chatType = (message.chat_type || "").trim().toLowerCase() || null;
+    const mentionOpenIds = [
+      ...decoded.mentionOpenIds,
+      ...((message.mentions || [])
+        .map((item) => item.id?.open_id || item.id?.user_id || item.id?.union_id || "")
+        .map((value) => value.trim())
+        .filter(Boolean) as string[])
+    ];
+    const mentioned = mentionOpenIds.length > 0 || decoded.hasMentionTag || /^\s*@\S+/.test(decoded.text);
     const senderId =
       event.sender?.sender_id?.open_id ||
       event.sender?.sender_id?.user_id ||
@@ -188,7 +233,10 @@ export function registerFeishuRoutes(
       senderId,
       messageId: message.message_id ?? null,
       eventId: normalized.eventId,
-      text
+      text: decoded.text,
+      chatId: openChatId,
+      chatType: chatType === "group" || chatType === "p2p" ? chatType : null,
+      mentioned
     });
   });
 

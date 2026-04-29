@@ -17,28 +17,6 @@ describe("codex global watcher", () => {
         response: () => new Response(JSON.stringify({ ok: true }), { status: 200 })
       },
       {
-        match: /\/api\/feishu\/open-ids\/recent\?limit=1$/,
-        response: () =>
-          new Response(
-            JSON.stringify({
-              items: [
-                {
-                  openId: "ou_recent_sender",
-                  sessionId: "feishu-codex-demo",
-                  lastSeenAt: "2026-04-27T10:00:00.000Z",
-                  messageCount: 3
-                }
-              ]
-            }),
-            {
-              status: 200,
-              headers: {
-                "content-type": "application/json"
-              }
-            }
-          )
-      },
-      {
         match: /\/api\/codex\/events$/,
         response: ({ bodyText }) => {
           seenBodies.push(bodyText);
@@ -179,7 +157,7 @@ describe("codex global watcher", () => {
             };
           };
         };
-        expect(postedPayload.senderId).toBe("ou_recent_sender");
+        expect(postedPayload.senderId).toBe("codex_global_watcher");
         expect(postedPayload.taskId).toBe("codex-turn-turn-001");
         expect(seenBodies[0]).toContain("Codex任务完成");
         expect(seenBodies[0]).toContain("完成了自动回推测试");
@@ -220,10 +198,6 @@ describe("codex global watcher", () => {
       {
         match: /\/health$/,
         response: () => new Response(JSON.stringify({ ok: true }), { status: 200 })
-      },
-      {
-        match: /\/api\/feishu\/open-ids\/recent\?limit=1$/,
-        response: () => new Response(JSON.stringify({ items: [] }), { status: 200 })
       },
       {
         match: /\/api\/codex\/events$/,

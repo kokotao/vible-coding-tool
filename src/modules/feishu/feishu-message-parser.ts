@@ -71,6 +71,12 @@ export const FEISHU_COMMAND_HELP_ITEMS: FeishuCommandHelpItem[] = [
     example: "查看项目"
   },
   {
+    title: "项目路径扫描",
+    syntax: "选择项目路径：<目录路径>",
+    description: "按你指定的目录列出子文件夹项目，适用于新装机还没有本地 session 记录的场景",
+    example: "选择项目路径：/Users/albertluo/workSpace/albertLuo"
+  },
+  {
     title: "选择项目",
     syntax: "选择项目：<项目名或路径>",
     description: "从项目列表中锁定当前项目，后续可继续选择 session",
@@ -139,6 +145,7 @@ export function buildFeishuCommandHelpText(reason: FeishuCommandHelpReason = "am
     "请使用以下任一格式：",
     ...FEISHU_COMMAND_HELP_ITEMS.map((item, index) => `${index + 1}. ${item.syntax} - ${item.description}`),
     "如果你想继续已有会话，也请直接带上 #session:<id>。",
+    "如果你是新装环境没有项目列表，请先发送：选择项目路径：<目录路径>。",
     "如果你想在当前项目下新建会话，请先 `查看项目` -> `选择项目` -> `新建 session`，然后直接发送任务内容。",
     "如果你想用连续选择流程，先 `查看项目`，再 `选择项目`，再 `选择 session`，最后直接发送任务内容。",
     "如果你只是想绑定姓名，可以直接发：绑定姓名：张三"

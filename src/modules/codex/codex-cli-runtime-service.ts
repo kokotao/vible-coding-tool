@@ -99,6 +99,11 @@ type ApiProbeResult = {
 
 type ApiProbeFn = (input: { baseUrl: string; apiKey: string }) => Promise<ApiProbeResult>;
 
+type SpawnInvocation = {
+  command: string;
+  args: string[];
+};
+
 export type CodexDispatchRuntimeContext = {
   ready: boolean;
   reason: string | null;
@@ -822,8 +827,8 @@ export class CodexCliRuntimeService {
   }
 
   private quoteWindowsArg(value: string) {
-    const escaped = value.replaceAll('"', '""');
-    return `"${escaped}"`;
+    const sanitized = value.replace(/\r?\n/g, " ").replaceAll("%", "%%").replaceAll('"', '""');
+    return `"${sanitized}"`;
   }
 
   private buildDetectionMessage() {
@@ -896,6 +901,7 @@ export class CodexCliRuntimeService {
     const token = "CODEX_MODEL_PROBE_OK";
     const prompt = `请仅输出 ${token}，不要输出其他字符。`;
     const args = ["exec", "--ephemeral", "--skip-git-repo-check", prompt];
+    const spawnInvocation = this.resolveCodexSpawnInvocation(codexCommand, args);
     const target = `${codexCommand} ${args.join(" ")}`;
     const probeEnv: NodeJS.ProcessEnv = {
       ...process.env
@@ -909,10 +915,11 @@ export class CodexCliRuntimeService {
     }
 
     const result = await new Promise<{ exitCode: number; stdout: string; stderr: string; timeout: boolean }>((resolvePromise) => {
-      const child = spawn(codexCommand, args, {
+      const child = spawn(spawnInvocation.command, spawnInvocation.args, {
         cwd: this.projectRoot,
         env: probeEnv,
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: process.platform === "win32"
       });
 
       let stdout = "";
@@ -987,5 +994,33 @@ export class CodexCliRuntimeService {
       message: `Codex 探测失败：${reason}`,
       target
     };
+  }
+
+  private resolveCodexSpawnInvocation(commandBin: string, commandArgs: string[]): SpawnInvocation {
+    if (process.platform !== "win32") {
+      return {
+        command: commandBin,
+        args: commandArgs
+      };
+    }
+
+    const ext = extname(commandBin).toLowerCase();
+    const useCmdWrapper = ext === ".cmd" || ext === ".bat" || ext.length === 0;
+    if (!useCmdWrapper) {
+      return {
+        command: commandBin,
+        args: commandArgs
+      };
+    }
+
+    const cmdline = this.buildWindowsCmdline(commandBin, commandArgs);
+    return {
+      command: "cmd.exe",
+      args: ["/d", "/s", "/c", cmdline]
+    };
+  }
+
+  private buildWindowsCmdline(commandBin: string, commandArgs: string[]) {
+    return [this.quoteWindowsArg(commandBin), ...commandArgs.map((arg) => this.quoteWindowsArg(arg))].join(" ");
   }
 }

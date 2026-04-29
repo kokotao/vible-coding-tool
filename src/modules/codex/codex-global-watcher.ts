@@ -5,8 +5,8 @@
  * @date 2026-04-27 10:43
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { resolveFeishuWatcherRecipientOpenId } from "../feishu/feishu-open-id-resolver";
 import {
   parseCodexTokenCountSnapshot,
   type CodexRuntimeMeta,
@@ -196,16 +196,7 @@ class CodexGlobalWatcher {
 
   async start() {
     await this.assertGatewayReady();
-    this.resolvedSenderId =
-      (await resolveFeishuWatcherRecipientOpenId({
-        gatewayUrl: this.args.gatewayUrl,
-        explicitRecipientOpenId: this.args.recipientOpenId,
-        fetchImpl: this.args.fetchImpl
-      })) || this.args.senderId;
-
-    if (!this.args.recipientOpenId && this.resolvedSenderId !== this.args.senderId) {
-      this.args.logger?.info?.(`[codex-watch] resolved recent feishu open_id=${this.resolvedSenderId}`);
-    }
+    this.resolvedSenderId = this.args.recipientOpenId || this.args.senderId;
 
     await this.tick();
     this.timer = setInterval(() => {
@@ -798,11 +789,34 @@ function normalizeNullable(value: string | undefined | null) {
 
 function resolveHomePath(rawPath: string) {
   const normalized = rawPath.trim();
-  const home = process.env.HOME || "";
-  if (normalized.startsWith("~/") && home) {
-    return resolve(home, normalized.slice(2));
+  const home =
+    process.env.HOME?.trim() ||
+    process.env.USERPROFILE?.trim() ||
+    `${process.env.HOMEDRIVE || ""}${process.env.HOMEPATH || ""}`.trim() ||
+    homedir();
+  if ((normalized.startsWith("~/") || normalized.startsWith("~\\")) && home) {
+    const candidate = resolve(home, normalized.slice(2));
+    if (shouldFallbackToCodexRoot(candidate)) {
+      return dirname(candidate);
+    }
+    return candidate;
   }
-  return resolve(normalized);
+  const candidate = resolve(normalized);
+  if (shouldFallbackToCodexRoot(candidate)) {
+    return dirname(candidate);
+  }
+  return candidate;
+}
+
+function shouldFallbackToCodexRoot(resolvedPath: string) {
+  if (existsSync(resolvedPath)) {
+    return false;
+  }
+  const normalized = resolvedPath.replace(/\\/g, "/").toLowerCase();
+  if (!normalized.endsWith("/.codex/sessions")) {
+    return false;
+  }
+  return existsSync(dirname(resolvedPath));
 }
 
 function updateWatcherRuntimeStatus(patch: Partial<Omit<CodexGlobalWatcherRuntimeStatus, "autoStartConfigured">>) {

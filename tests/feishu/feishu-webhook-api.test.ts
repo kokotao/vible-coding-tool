@@ -243,6 +243,23 @@ function createFeishuPanelPaginationFixture() {
   };
 }
 
+function createFeishuProjectPathScanFixture() {
+  const sessionsRoot = mkdtempSync(join(tmpdir(), "feishu-panel-path-scan-"));
+  const projectRoot = join(sessionsRoot, "workspace-projects");
+  const projectAPath = join(projectRoot, "demo-project-a");
+  const projectBPath = join(projectRoot, "demo-project-b");
+  mkdirSync(projectAPath, { recursive: true });
+  mkdirSync(projectBPath, { recursive: true });
+  mkdirSync(join(projectRoot, ".hidden-project"), { recursive: true });
+
+  return {
+    sessionsRoot,
+    projectRoot,
+    projectAPath,
+    projectBPath
+  };
+}
+
 describe("feishu webhook api", () => {
   it("returns challenge response", async () => {
     const db = createSqliteDatabase(":memory:");
@@ -1439,6 +1456,127 @@ describe("feishu webhook api", () => {
     }
   });
 
+  it("supports project-path scanning card and allows selecting a folder project in fresh environment", async () => {
+    const fixture = createFeishuProjectPathScanFixture();
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu",
+        codexAutoDispatchEnabled: false,
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: fixture.sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const scanResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-panel-project-path-scan",
+              message_type: "text",
+              content: `{"text":"选择项目路径：${fixture.projectRoot}"}`
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_panel_path_scan_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(scanResponse.statusCode).toBe(200);
+      expect(scanResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "view_projects_by_path",
+          context: expect.objectContaining({
+            currentView: "project_list"
+          })
+        })
+      );
+
+      expect(mockOpenApi.messageBodies).toHaveLength(1);
+      const pathScanCard = parseOutboundInteractiveCard(mockOpenApi.messageBodies[0]);
+      expect(pathScanCard.header?.title?.content).toBe("项目路径扫描");
+      expect(JSON.stringify(pathScanCard.elements)).toContain("demo-project-a");
+      expect(JSON.stringify(pathScanCard.elements)).toContain("demo-project-b");
+      expect(JSON.stringify(pathScanCard.elements)).not.toContain(".hidden-project");
+
+      const selectProjectResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-panel-project-path-select-project",
+              message_type: "text",
+              content: `{"text":"选择项目：${fixture.projectAPath}"}`
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_panel_path_scan_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(selectProjectResponse.statusCode).toBe(200);
+      expect(selectProjectResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "select_project",
+          context: expect.objectContaining({
+            currentView: "session_list",
+            selectedProjectPath: fixture.projectAPath
+          })
+        })
+      );
+    } finally {
+      await app.close();
+      rmSync(fixture.sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
   it("supports panel continuous selection and dispatches plain text into selected session", async () => {
     const fixture = createFeishuPanelSessionsFixture();
     const db = createSqliteDatabase(":memory:");
@@ -1736,7 +1874,7 @@ describe("feishu webhook api", () => {
         msg_type: string;
         content: string;
       };
-      expect(outbound.receive_id).toBe("ou_panel_select_session_user");
+      expect(outbound.receive_id).toBe("chat-card-action-select-session");
       expect(outbound.msg_type).toBe("interactive");
       expect(outbound.content).toContain("已切换到此会话，可直接回复任务内容。");
     } finally {
@@ -2660,5 +2798,178 @@ describe("feishu webhook api", () => {
     expect(dashboard.json().summary.runningTaskCount).toBe(1);
 
     await app.close();
+  });
+
+  it("ignores group message when bot is not mentioned", async () => {
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token"
+      }
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/feishu/webhook",
+      headers: {
+        "x-lark-request-token": "verify-token"
+      },
+      payload: {
+        event: {
+          type: "im.message.receive_v1",
+          message: {
+            message_id: "msg-group-ignore-1",
+            message_type: "text",
+            chat_id: "oc_group_ignore_1",
+            chat_type: "group",
+            content: "{\"text\":\"#session:group-ignore-session 这条消息没有@机器人\"}"
+          },
+          sender: {
+            sender_id: {
+              open_id: "ou_group_ignore_user"
+            }
+          }
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(
+      expect.objectContaining({
+        accepted: true,
+        ignored: true,
+        reason: "group_not_mentioned"
+      })
+    );
+
+    const tasks = await app.inject({
+      method: "GET",
+      url: "/api/codex/tasks?limit=20"
+    });
+    expect(tasks.statusCode).toBe(200);
+    expect(tasks.json().items).toHaveLength(0);
+
+    await app.close();
+  });
+
+  it("keeps group chat routing consistent from feishu command to codex completion", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const currentConfig = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...(currentConfig.json() as Record<string, unknown>),
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: "",
+          templateTaskStarted: "任务开始",
+          templateTaskSucceeded: "任务成功",
+          templateTaskFailed: "任务失败",
+          templateTaskPendingConfirm: "请确认"
+        }
+      });
+
+      const inbound = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-group-route-1",
+              message_type: "text",
+              chat_id: "oc_group_route_1",
+              chat_type: "group",
+              content:
+                "{\"text\":\"@机器人 #session:group-route-session 修复群聊路由\",\"mentions\":[{\"id\":{\"open_id\":\"ou_bot_demo\"}}]}",
+              mentions: [
+                {
+                  id: {
+                    open_id: "ou_bot_demo"
+                  }
+                }
+              ]
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_group_route_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(inbound.statusCode).toBe(200);
+      const inboundBody = inbound.json() as {
+        accepted: boolean;
+        sessionId: string;
+      };
+      expect(inboundBody.accepted).toBe(true);
+
+      const firstNotifyPayload = JSON.parse(mockOpenApi.messageBodies[0]) as {
+        receive_id: string;
+        msg_type: string;
+      };
+      expect(firstNotifyPayload.receive_id).toBe("oc_group_route_1");
+      expect(firstNotifyPayload.msg_type).toBe("interactive");
+
+      const codexDone = await app.inject({
+        method: "POST",
+        url: "/api/codex/events",
+        payload: {
+          eventId: "evt-group-route-1",
+          taskId: "task-group-route-1",
+          sessionId: inboundBody.sessionId,
+          status: "succeeded",
+          summary: "群聊路由回推校验通过",
+          detail: "完成回推",
+          senderId: "codex_runner"
+        }
+      });
+      expect(codexDone.statusCode).toBe(200);
+      expect(codexDone.json()).toEqual(
+        expect.objectContaining({
+          accepted: true
+        })
+      );
+
+      expect(mockOpenApi.messageBodies.length).toBeGreaterThanOrEqual(2);
+      const secondNotifyPayload = JSON.parse(mockOpenApi.messageBodies[1]) as {
+        receive_id: string;
+        msg_type: string;
+      };
+      expect(secondNotifyPayload.receive_id).toBe("oc_group_route_1");
+      expect(secondNotifyPayload.msg_type).toBe("interactive");
+    } finally {
+      await app.close();
+    }
   });
 });

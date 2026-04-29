@@ -7,6 +7,10 @@
 import { randomUUID } from "node:crypto";
 import { FeishuOutboundNotifier } from "../notifications/feishu-outbound-notifier";
 import { AuditLogRepository } from "../../storage/repositories/audit-log-repository";
+import {
+  FeishuSessionRouteRepository,
+  type FeishuSessionRouteRecord
+} from "../../storage/repositories/feishu-session-route-repository";
 import { IdempotencyRepository } from "../../storage/repositories/idempotency-repository";
 import { MessageRepository } from "../../storage/repositories/message-repository";
 import { SessionThreadRepository } from "../../storage/repositories/session-thread-repository";
@@ -22,6 +26,7 @@ type CodexEventServiceDeps = {
   auditLogRepository: AuditLogRepository;
   idempotencyRepository: IdempotencyRepository;
   sessionThreadRepository: SessionThreadRepository;
+  feishuSessionRouteRepository: FeishuSessionRouteRepository;
   feishuNotifier?: FeishuOutboundNotifier;
   terminalEventStream?: TerminalEventStream;
 };
@@ -164,7 +169,7 @@ export class CodexEventService {
       taskTitle: event.summary?.trim() || summary,
       detail: event.detail?.trim() || null,
       actorId: senderId,
-      recipientOpenId: this.resolveRecipientOpenId(updatedTask.sessionId, senderOpenId),
+      ...this.resolveRecipientRoute(updatedTask.sessionId, senderOpenId),
       threadAlias: threadBinding?.threadAlias ?? null,
       threadRef: resolvedThreadRef,
       runtimeMeta: event.runtimeMeta ?? null
@@ -355,10 +360,44 @@ export class CodexEventService {
     return "closed";
   }
 
-  private resolveRecipientOpenId(sessionId: string, fallbackOpenId: string | null) {
+  private resolveRecipientRoute(sessionId: string, fallbackOpenId: string | null) {
+    const route = this.deps.feishuSessionRouteRepository.findBySessionId(sessionId);
+    if (route && route.sourcePlatform === "feishu" && route.routeStatus === "active") {
+      const groupTarget = this.resolveRecipientChatId(route);
+      if (groupTarget) {
+        return {
+          recipientOpenId: null,
+          recipientChatId: groupTarget
+        };
+      }
+
+      if (this.parseOpenId(route.senderOpenId)) {
+        return {
+          recipientOpenId: route.senderOpenId,
+          recipientChatId: null
+        };
+      }
+    }
+
     const session = this.deps.toolSessionRepository.findBySessionId(sessionId);
     const sessionOpenId = this.parseOpenId(session?.createdBy);
-    return sessionOpenId ?? fallbackOpenId;
+    return {
+      recipientOpenId: sessionOpenId ?? fallbackOpenId,
+      recipientChatId: null
+    };
+  }
+
+  private resolveRecipientChatId(route: FeishuSessionRouteRecord) {
+    if (route.chatType !== "group") {
+      return null;
+    }
+
+    const chatId = (route.chatId || "").trim();
+    if (!chatId) {
+      return null;
+    }
+
+    return chatId;
   }
 
   private parseOpenId(value: string | null | undefined) {
@@ -379,6 +418,7 @@ export class CodexEventService {
     detail?: string | null;
     actorId: string;
     recipientOpenId: string | null;
+    recipientChatId?: string | null;
     threadAlias?: string | null;
     threadRef?: string | null;
     runtimeMeta?: CodexRuntimeMeta;

@@ -6,6 +6,9 @@
  */
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexDispatchService } from "../../src/modules/codex/codex-dispatch-service";
 
@@ -16,6 +19,70 @@ vi.mock("node:child_process", () => ({
 describe("codex dispatch service", () => {
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("uses selected project path as cwd when dispatching a fresh session", () => {
+    const mockedSpawn = vi.mocked(spawn);
+    const tempProjectDir = mkdtempSync(join(tmpdir(), "codex-dispatch-cwd-"));
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      unref: vi.fn()
+    });
+    mockedSpawn.mockReturnValue(child as never);
+
+    try {
+      const service = new CodexDispatchService(
+        {
+          codexEventService: {
+            handleEvent: vi.fn(async () => ({ accepted: true }))
+          } as never,
+          auditLogRepository: {
+            create: vi.fn()
+          } as never,
+          toolSessionRepository: {
+            findBySessionId: () => null
+          } as never,
+          codexCliRuntimeService: {
+            prepareDispatchContext: () => ({
+              ready: true,
+              codexBin: "codex",
+              env: {},
+              extraArgs: [],
+              authorization: {
+                trustedInConfig: true,
+                trustUpdated: false,
+                warning: null
+              }
+            })
+          } as never
+        },
+        {
+          enabled: true,
+          codexBin: "codex",
+          skipGitRepoCheck: false
+        }
+      );
+
+      const result = service.dispatchTask({
+        taskId: "task-cwd-001",
+        sessionId: "session-cwd-001",
+        prompt: "hello from project",
+        actorId: "ou_test",
+        projectPath: tempProjectDir
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(mockedSpawn).toHaveBeenCalledWith(
+        "codex",
+        expect.any(Array),
+        expect.objectContaining({
+          cwd: tempProjectDir
+        })
+      );
+    } finally {
+      rmSync(tempProjectDir, { recursive: true, force: true });
+    }
   });
 
   it("preserves detailed runtime meta when codex closes", async () => {
@@ -154,6 +221,73 @@ describe("codex dispatch service", () => {
         totalTokens: 13
       }
     });
+  });
+
+  it("wraps codex spawn with cmd.exe on windows when resolved command is cmd shim", () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const mockedSpawn = vi.mocked(spawn);
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      unref: vi.fn()
+    });
+    mockedSpawn.mockReturnValue(child as never);
+
+    try {
+      const service = new CodexDispatchService(
+        {
+          codexEventService: {
+            handleEvent: vi.fn(async () => ({ accepted: true }))
+          } as never,
+          auditLogRepository: {
+            create: vi.fn()
+          } as never,
+          toolSessionRepository: {
+            findBySessionId: () => null
+          } as never,
+          codexCliRuntimeService: {
+            prepareDispatchContext: () => ({
+              ready: true,
+              codexBin: "C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd",
+              env: {},
+              extraArgs: [],
+              authorization: {
+                trustedInConfig: true,
+                trustUpdated: false,
+                warning: null
+              }
+            })
+          } as never
+        },
+        {
+          enabled: true,
+          codexBin: "codex",
+          skipGitRepoCheck: false
+        }
+      );
+
+      const result = service.dispatchTask({
+        taskId: "task-win-001",
+        sessionId: "session-win-001",
+        prompt: "windows probe",
+        actorId: "ou_test"
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(mockedSpawn).toHaveBeenCalledWith(
+        "cmd.exe",
+        expect.arrayContaining(["/d", "/s", "/c"]),
+        expect.objectContaining({
+          detached: true,
+          windowsHide: true
+        })
+      );
+      const spawnArgs = mockedSpawn.mock.calls[0]?.[1] as string[];
+      expect(spawnArgs[3]).toContain('"C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd"');
+      expect(spawnArgs[3]).toContain('"exec"');
+    } finally {
+      platformSpy.mockRestore();
+    }
   });
 });
 

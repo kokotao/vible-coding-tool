@@ -5,7 +5,8 @@
  * @date 2026-04-27 11:17
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, relative, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, relative, resolve } from "node:path";
 import { AppError } from "../../lib/errors";
 import { summarizeText } from "../common/display";
 
@@ -693,9 +694,31 @@ function deriveDateFromPath(rootPath: string, filePath: string, fallbackDate: Da
 
 function resolveHomePath(pathValue: string) {
   const value = (pathValue || "").trim();
-  const home = process.env.HOME || "";
-  if (value.startsWith("~/") && home) {
-    return resolve(home, value.slice(2));
+  const home =
+    process.env.HOME?.trim() ||
+    process.env.USERPROFILE?.trim() ||
+    `${process.env.HOMEDRIVE || ""}${process.env.HOMEPATH || ""}`.trim() ||
+    homedir();
+  const normalizedInput = value || "~/.codex/sessions";
+  if ((normalizedInput.startsWith("~/") || normalizedInput.startsWith("~\\")) && home) {
+    const candidate = resolve(home, normalizedInput.slice(2));
+    if (shouldFallbackToCodexRoot(candidate)) {
+      return dirname(candidate);
+    }
+    return candidate;
   }
-  return resolve(value || "~/.codex/sessions");
+
+  const resolvedPath = resolve(normalizedInput);
+  if (shouldFallbackToCodexRoot(resolvedPath)) {
+    return dirname(resolvedPath);
+  }
+  return resolvedPath;
+}
+
+function shouldFallbackToCodexRoot(resolvedPath: string) {
+  if (existsSync(resolvedPath)) {
+    return false;
+  }
+  const parent = dirname(resolvedPath);
+  return basename(resolvedPath).toLowerCase() === "sessions" && basename(parent) === ".codex" && existsSync(parent);
 }

@@ -29,6 +29,7 @@ export function migrateDatabase(db: SqliteDatabase) {
   db.exec(migration);
   ensureAuditLogTaskIdColumn(db);
   ensureFeishuPanelContextColumns(db);
+  ensureFeishuSessionRoutesTable(db);
 }
 
 function ensureAuditLogTaskIdColumn(db: SqliteDatabase) {
@@ -47,4 +48,21 @@ function ensureFeishuPanelContextColumns(db: SqliteDatabase) {
   if (!hasPendingComposeMode) {
     db.exec("ALTER TABLE feishu_panel_contexts ADD COLUMN pending_compose_mode TEXT");
   }
+}
+
+function ensureFeishuSessionRoutesTable(db: SqliteDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS feishu_session_routes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL UNIQUE,
+      source_platform TEXT NOT NULL,
+      chat_type TEXT NOT NULL,
+      chat_id TEXT,
+      sender_open_id TEXT NOT NULL,
+      last_platform_message_id TEXT,
+      route_status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
 }

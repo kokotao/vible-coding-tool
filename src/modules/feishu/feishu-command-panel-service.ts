@@ -5,6 +5,8 @@
  * @date 2026-04-27 22:05
  */
 import { AppError } from "../../lib/errors";
+import { readdirSync, statSync } from "node:fs";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import {
   buildFeishuComposeGuideCard,
   buildFeishuGatewayStatusCard,
@@ -76,24 +78,53 @@ export class FeishuCommandPanelService {
     };
   }
 
+  async showProjectsByPath(openId: string, selector: string, refresh = true): Promise<FeishuCommandPanelSelection> {
+    const basePath = this.resolveExistingProjectPath(selector);
+    const normalizedSelector = selector.trim();
+
+    const context = this.updateContext(openId, {
+      currentView: "project_list",
+      lastAction: basePath ? `view_projects_by_path:${basePath}` : `view_projects_by_path:not_found:${normalizedSelector}`
+    });
+    const snapshot = this.loadLocalSessions(refresh);
+    const projects = basePath ? this.listProjectDirectories(basePath, snapshot.items) : [];
+    return {
+      context,
+      card: buildFeishuProjectListCard({
+        context,
+        projects,
+        title: "项目路径扫描",
+        intro: basePath
+          ? `已按路径扫描项目目录：${basePath}\n请选择一个项目进入 session 或新建会话流程。`
+          : "未识别到可访问的项目路径，请检查路径是否存在并重试。",
+        emptyMessage: basePath
+          ? `【暂无项目】\n路径 ${basePath} 下未扫描到可选子文件夹。`
+          : `【路径无效】\n未找到目录：${normalizedSelector || "空路径"}\n请使用绝对路径，例如：/Users/albertluo/workSpace/albertLuo`
+      })
+    };
+  }
+
   async selectProject(openId: string, selector: string, refresh = true): Promise<FeishuCommandPanelSelection> {
     const snapshot = this.loadLocalSessions(refresh);
-    const project = this.resolveProject(snapshot.items, selector);
-    if (!project) {
-      throw new AppError("FEISHU_PANEL_PROJECT_NOT_FOUND", 404, `Project not found for selector: ${selector}`);
+    const selected = this.resolveProjectSelection(snapshot.items, selector);
+    if (!selected) {
+      throw new AppError(
+        "FEISHU_PANEL_PROJECT_NOT_FOUND",
+        404,
+        `Project not found for selector: ${selector}. Use an absolute path when there is no local session history.`
+      );
     }
 
-    const sessions = this.buildSessionsForProject(snapshot.items, project.projectPath);
     return this.renderProjectSessionList(openId, {
-      project,
-      sessions,
+      project: selected.project,
+      sessions: selected.sessions,
       page: 1,
       window: "all",
       actionType: "view_project_sessions",
-      lastAction: `select_project:${project.projectPath}`,
+      lastAction: `select_project:${selected.project.projectPath}`,
       contextPatch: {
-        selectedProjectName: project.projectName,
-        selectedProjectPath: project.projectPath,
+        selectedProjectName: selected.project.projectName,
+        selectedProjectPath: selected.project.projectPath,
         selectedThreadId: null,
         selectedSessionTitle: null
       }
@@ -115,7 +146,7 @@ export class FeishuCommandPanelService {
     }
 
     const snapshot = this.loadLocalSessions(refresh);
-    const project = this.resolveProject(snapshot.items, context.selectedProjectPath);
+    const project = this.resolveProject(snapshot.items, context.selectedProjectPath) ?? this.resolveManualProjectSummary(snapshot.items, context.selectedProjectPath);
     if (!project) {
       return this.showProjects(openId, refresh);
     }
@@ -146,7 +177,7 @@ export class FeishuCommandPanelService {
     }
 
     const snapshot = this.loadLocalSessions(refresh);
-    const project = this.resolveProject(snapshot.items, context.selectedProjectPath);
+    const project = this.resolveProject(snapshot.items, context.selectedProjectPath) ?? this.resolveManualProjectSummary(snapshot.items, context.selectedProjectPath);
     if (!project) {
       return this.showProjects(openId, refresh);
     }
@@ -318,6 +349,8 @@ export class FeishuCommandPanelService {
     switch (command.actionType) {
       case "view_projects":
         return this.showProjects(openId, refresh);
+      case "view_projects_by_path":
+        return this.showProjectsByPath(openId, command.selector, refresh);
       case "select_project":
         return this.selectProject(openId, command.selector, refresh);
       case "view_sessions":
@@ -581,6 +614,101 @@ export class FeishuCommandPanelService {
     );
   }
 
+  private resolveProjectSelection(items: LocalCodexSessionRecord[], selector: string) {
+    const project = this.resolveProject(items, selector);
+    if (project) {
+      return {
+        project,
+        sessions: this.buildSessionsForProject(items, project.projectPath)
+      };
+    }
+
+    const manualProject = this.resolveManualProjectSummary(items, selector);
+    if (!manualProject) {
+      return null;
+    }
+
+    return {
+      project: manualProject,
+      sessions: this.buildSessionsForProject(items, manualProject.projectPath)
+    };
+  }
+
+  private resolveManualProjectSummary(items: LocalCodexSessionRecord[], selector: string) {
+    const projectPath = this.resolveExistingProjectPath(selector);
+    if (!projectPath) {
+      return null;
+    }
+
+    const sessions = this.buildSessionsForProject(items, projectPath);
+    const latest = sessions[0] ?? null;
+    return {
+      projectName: basename(projectPath.replace(/[\\/]+$/, "")) || projectPath,
+      projectPath,
+      sessionCount: sessions.length,
+      latestUpdatedAt: latest?.updatedAt || "无",
+      latestSessionTitle: latest?.sessionTitle || "暂无会话"
+    } satisfies FeishuPanelProjectSummary;
+  }
+
+  private listProjectDirectories(basePath: string, items: LocalCodexSessionRecord[]) {
+    const dirs = readdirSync(basePath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => {
+        const projectPath = join(basePath, entry.name);
+        const sessions = this.buildSessionsForProject(items, projectPath);
+        const latest = sessions[0] ?? null;
+        return {
+          projectName: entry.name,
+          projectPath,
+          sessionCount: sessions.length,
+          latestUpdatedAt: latest?.updatedAt || "无",
+          latestSessionTitle: latest?.sessionTitle || "暂无会话"
+        } satisfies FeishuPanelProjectSummary;
+      });
+
+    return dirs.sort((left, right) => left.projectName.localeCompare(right.projectName));
+  }
+
+  private resolveExistingProjectPath(selector: string) {
+    const normalized = selector.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const expandedHome =
+      normalized.startsWith("~/") && process.env.HOME
+        ? resolve(process.env.HOME, normalized.slice(2))
+        : normalized;
+    const hasPathHint = /[\\/]/.test(expandedHome) || expandedHome.startsWith("~");
+    const rawCandidates = [expandedHome];
+
+    if (!isAbsolute(expandedHome)) {
+      rawCandidates.push(resolve(process.cwd(), expandedHome));
+      rawCandidates.push(resolve(process.cwd(), "..", expandedHome));
+      if (!hasPathHint) {
+        rawCandidates.push(resolve(process.cwd(), "..", "..", expandedHome));
+      }
+    }
+
+    const candidates = [...new Set(rawCandidates.map((item) => item.trim()).filter(Boolean))];
+    for (const candidate of candidates) {
+      if (this.isDirectory(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  private isDirectory(path: string) {
+    try {
+      return statSync(path).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
   private resolveSession(items: LocalCodexSessionRecord[], selector: string) {
     const normalized = selector.trim();
     if (!normalized) {
@@ -638,7 +766,7 @@ export class FeishuCommandPanelService {
     }
 
     const snapshot = this.loadLocalSessions(refresh);
-    return this.resolveProject(snapshot.items, context.selectedProjectPath);
+    return this.resolveProject(snapshot.items, context.selectedProjectPath) ?? this.resolveManualProjectSummary(snapshot.items, context.selectedProjectPath);
   }
 
   private resolveSelectedSession(context: FeishuPanelContextRecord, refresh = false) {

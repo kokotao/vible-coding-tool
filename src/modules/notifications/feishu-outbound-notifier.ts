@@ -31,6 +31,7 @@ type NotifyTaskStatusInput = {
   detail?: string | null;
   actorId: string;
   recipientOpenId?: string | null;
+  recipientChatId?: string | null;
   threadAlias?: string | null;
   threadRef?: string | null;
   runtimeMeta?: CodexRuntimeMeta;
@@ -39,11 +40,13 @@ type NotifyTaskStatusInput = {
 type NotifyTextInput = {
   text: string;
   recipientOpenId?: string | null;
+  recipientChatId?: string | null;
 };
 
 type NotifyCardInput = {
   card: string;
   recipientOpenId?: string | null;
+  recipientChatId?: string | null;
 };
 
 type FeishuOutboundNotifierOptions = {
@@ -107,7 +110,7 @@ export class FeishuOutboundNotifier {
       renderedText,
       footerNote: this.buildRuntimeNote(input.runtimeMeta ?? null)
     });
-    return this.dispatchCard(config, card, input.recipientOpenId ?? null);
+    return this.dispatchCard(config, card, input.recipientOpenId ?? null, input.recipientChatId ?? null);
   }
 
   async notifyText(input: NotifyTextInput): Promise<FeishuNotifyResult> {
@@ -122,7 +125,7 @@ export class FeishuOutboundNotifier {
       };
     }
 
-    return this.dispatchText(config, input.text, input.recipientOpenId ?? null);
+    return this.dispatchText(config, input.text, input.recipientOpenId ?? null, input.recipientChatId ?? null);
   }
 
   async notifyCard(input: NotifyCardInput): Promise<FeishuNotifyResult> {
@@ -137,27 +140,61 @@ export class FeishuOutboundNotifier {
       };
     }
 
-    return this.dispatchCard(config, input.card, input.recipientOpenId ?? null);
+    return this.dispatchCard(config, input.card, input.recipientOpenId ?? null, input.recipientChatId ?? null);
   }
 
-  private async dispatchText(config: ConnectorConfigRecord, text: string, recipientOpenId: string | null) {
+  private async dispatchText(
+    config: ConnectorConfigRecord,
+    text: string,
+    recipientOpenId: string | null,
+    recipientChatId: string | null
+  ) {
     const callbackUrl = (config.callbackUrl || "").trim();
+
+    if (recipientChatId) {
+      if (callbackUrl && this.isBotWebhook(callbackUrl) && !this.isLocalIngressPath(callbackUrl)) {
+        return {
+          sent: false,
+          skipped: true,
+          reason: "unsupported_routing_mode",
+          statusCode: null
+        };
+      }
+      return this.postOpenApiText(config, text, recipientChatId, "chat_id");
+    }
 
     if (callbackUrl && this.isBotWebhook(callbackUrl) && !this.isLocalIngressPath(callbackUrl)) {
       return this.postWebhookText(callbackUrl, text);
     }
 
-    return this.postOpenApiText(config, text, recipientOpenId);
+    return this.postOpenApiText(config, text, recipientOpenId, "open_id");
   }
 
-  private async dispatchCard(config: ConnectorConfigRecord, cardContent: string, recipientOpenId: string | null) {
+  private async dispatchCard(
+    config: ConnectorConfigRecord,
+    cardContent: string,
+    recipientOpenId: string | null,
+    recipientChatId: string | null
+  ) {
     const callbackUrl = (config.callbackUrl || "").trim();
+
+    if (recipientChatId) {
+      if (callbackUrl && this.isBotWebhook(callbackUrl) && !this.isLocalIngressPath(callbackUrl)) {
+        return {
+          sent: false,
+          skipped: true,
+          reason: "unsupported_routing_mode",
+          statusCode: null
+        };
+      }
+      return this.postOpenApiCard(config, cardContent, recipientChatId, "chat_id");
+    }
 
     if (callbackUrl && this.isBotWebhook(callbackUrl) && !this.isLocalIngressPath(callbackUrl)) {
       return this.postWebhookCard(callbackUrl, cardContent);
     }
 
-    return this.postOpenApiCard(config, cardContent, recipientOpenId);
+    return this.postOpenApiCard(config, cardContent, recipientOpenId, "open_id");
   }
 
   private skipDuplicateTaskStatusNotification(input: NotifyTaskStatusInput) {
@@ -169,7 +206,7 @@ export class FeishuOutboundNotifier {
       "feishu:task-status",
       input.taskId.trim(),
       input.status.trim(),
-      (input.recipientOpenId || "").trim() || "broadcast"
+      (input.recipientChatId || "").trim() || (input.recipientOpenId || "").trim() || "broadcast"
     ];
     const idempotencyKey = keyParts.join(":");
     const isNew = this.idempotencyRepository.saveIfAbsent({
@@ -280,7 +317,8 @@ export class FeishuOutboundNotifier {
   private async postOpenApiText(
     config: ConnectorConfigRecord,
     text: string,
-    recipientOpenId: string | null
+    receiveId: string | null,
+    receiveIdType: "open_id" | "chat_id"
   ): Promise<FeishuNotifyResult> {
     const appId = config.appId.trim();
     const appSecret = config.appSecret.trim();
@@ -294,7 +332,7 @@ export class FeishuOutboundNotifier {
       };
     }
 
-    if (!recipientOpenId) {
+    if (!receiveId) {
       return {
         sent: false,
         skipped: true,
@@ -319,21 +357,24 @@ export class FeishuOutboundNotifier {
     }, this.timeoutMs);
 
     try {
-      const response = await this.fetchImpl(`${this.openBaseUrl}/open-apis/im/v1/messages?receive_id_type=open_id`, {
+      const response = await this.fetchImpl(
+        `${this.openBaseUrl}/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`,
+        {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${tokenResult.token}`
         },
         body: JSON.stringify({
-          receive_id: recipientOpenId,
+          receive_id: receiveId,
           msg_type: "text",
           content: JSON.stringify({
             text
           })
         }),
         signal: abortController.signal
-      });
+        }
+      );
 
       const payload = (await response.json().catch(() => null)) as { code?: number } | null;
       const success = response.ok && payload?.code === 0;
@@ -359,7 +400,8 @@ export class FeishuOutboundNotifier {
   private async postOpenApiCard(
     config: ConnectorConfigRecord,
     cardContent: string,
-    recipientOpenId: string | null
+    receiveId: string | null,
+    receiveIdType: "open_id" | "chat_id"
   ): Promise<FeishuNotifyResult> {
     const appId = config.appId.trim();
     const appSecret = config.appSecret.trim();
@@ -373,7 +415,7 @@ export class FeishuOutboundNotifier {
       };
     }
 
-    if (!recipientOpenId) {
+    if (!receiveId) {
       return {
         sent: false,
         skipped: true,
@@ -398,19 +440,22 @@ export class FeishuOutboundNotifier {
     }, this.timeoutMs);
 
     try {
-      const response = await this.fetchImpl(`${this.openBaseUrl}/open-apis/im/v1/messages?receive_id_type=open_id`, {
+      const response = await this.fetchImpl(
+        `${this.openBaseUrl}/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`,
+        {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${tokenResult.token}`
         },
         body: JSON.stringify({
-          receive_id: recipientOpenId,
+          receive_id: receiveId,
           msg_type: "interactive",
           content: cardContent
         }),
         signal: abortController.signal
-      });
+        }
+      );
 
       const payload = (await response.json().catch(() => null)) as { code?: number } | null;
       const success = response.ok && payload?.code === 0;

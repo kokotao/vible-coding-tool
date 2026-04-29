@@ -65,6 +65,19 @@ CREATE TABLE IF NOT EXISTS feishu_panel_contexts (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS feishu_session_routes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL UNIQUE,
+  source_platform TEXT NOT NULL,
+  chat_type TEXT NOT NULL,
+  chat_id TEXT,
+  sender_open_id TEXT NOT NULL,
+  last_platform_message_id TEXT,
+  route_status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id TEXT NOT NULL UNIQUE,

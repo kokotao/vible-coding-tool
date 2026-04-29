@@ -191,4 +191,57 @@ describe("codex cli runtime service", () => {
       rmSync(workspaceRoot, { recursive: true, force: true });
     }
   });
+
+  it("uses cmd wrapper for startup probe on windows when resolved codex command has no extension", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "codex-runtime-win-probe-"));
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    const spawnImpl = vi.fn(() => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from("CODEX_MODEL_PROBE_OK"));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    const CodexCliRuntimeService = await loadRuntimeServiceWithChildProcessMock((file: string, args?: readonly string[]) => {
+      const argv = Array.isArray(args) ? args : [];
+      if (file === "cmd.exe" && argv.includes("codex --version")) {
+        return "codex-cli 0.130.0\n";
+      }
+      throw new Error(`unexpected command: ${file} ${argv.join(" ")}`);
+    }, spawnImpl as (...args: any[]) => any);
+
+    try {
+      const runtimeService = new CodexCliRuntimeService({
+        codexBin: "codex",
+        projectRoot: workspaceRoot
+      });
+
+      const status = await runtimeService.probeAvailabilityAtStartup();
+      expect(status.apiConfig.usable).toBe(true);
+      expect(spawnImpl).toHaveBeenCalledTimes(1);
+      expect(spawnImpl).toHaveBeenCalledWith(
+        "cmd.exe",
+        expect.arrayContaining(["/d", "/s", "/c"]),
+        expect.objectContaining({
+          windowsHide: true
+        })
+      );
+
+      const firstCall = spawnImpl.mock.calls[0] as unknown[] | undefined;
+      const cmdArgs = (firstCall?.[1] as string[] | undefined) || [];
+      expect(cmdArgs[3]).toContain('"codex"');
+      expect(cmdArgs[3]).toContain('"exec"');
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
 });

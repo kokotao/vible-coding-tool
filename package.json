@@ -1,6 +1,6 @@
 {
   "name": "@tauchun/viblect",
-  "version": "0.1.2",
+  "version": "0.1.6",
   "private": false,
   "description": "Gateway service between vibe coding tools and IM bots.",
   "bin": {
@@ -16,7 +16,9 @@
     "dist/src",
     "public",
     "bin",
-    "README.md"
+    "README.md",
+    "image.png",
+    "image-1.png"
   ],
   "scripts": {
     "dev": "tsx src/server.ts",

@@ -25,6 +25,10 @@ import { ConnectorConfigService } from "../connectors/connector-config-service";
 import { FeishuIdentityService } from "./feishu-identity-service";
 import { FeishuOutboundNotifier } from "../notifications/feishu-outbound-notifier";
 import { AuditLogRepository } from "../../storage/repositories/audit-log-repository";
+import {
+  FeishuSessionRouteRepository,
+  type FeishuSessionRouteChatType
+} from "../../storage/repositories/feishu-session-route-repository";
 import { IdempotencyRepository } from "../../storage/repositories/idempotency-repository";
 import { MessageRepository } from "../../storage/repositories/message-repository";
 import { RiskConfirmationRepository } from "../../storage/repositories/risk-confirmation-repository";
@@ -42,6 +46,7 @@ type FeishuWebhookServiceDeps = {
   auditLogRepository: AuditLogRepository;
   connectorConfigService: ConnectorConfigService;
   idempotencyRepository: IdempotencyRepository;
+  feishuSessionRouteRepository: FeishuSessionRouteRepository;
   feishuIdentityService: FeishuIdentityService;
   feishuCommandPanelService?: FeishuCommandPanelService;
   codexDispatchService?: CodexDispatchService;
@@ -55,12 +60,20 @@ type FeishuIncomingMessage = {
   messageId: string | null;
   eventId: string | null;
   text: string;
+  chatId: string | null;
+  chatType: FeishuSessionRouteChatType | null;
+  mentioned: boolean;
 };
 
 export class FeishuWebhookService {
   constructor(private readonly deps: FeishuWebhookServiceDeps) {}
 
   async handleIncomingMessage(message: FeishuIncomingMessage) {
+    const routeCheck = this.validateIncomingRoute(message);
+    if (routeCheck.ignored) {
+      return routeCheck;
+    }
+
     const bindingCommand = parseFeishuIdentityBindingCommand(message.text);
     if (bindingCommand) {
       return this.handleIdentityBinding(message, bindingCommand);
@@ -136,7 +149,12 @@ export class FeishuWebhookService {
           platformMessageId: message.messageId
         };
 
-        return this.executeParsedCommand(message, parsed, panelContext.selectedModelSlug ?? null);
+        return this.executeParsedCommand(
+          message,
+          parsed,
+          panelContext.selectedModelSlug ?? null,
+          panelContext.selectedProjectPath ?? null
+        );
       }
 
       if (panelContext?.selectedThreadId) {
@@ -197,7 +215,10 @@ export class FeishuWebhookService {
         senderId: message.senderId,
         messageId: message.messageId,
         eventId: message.eventId,
-        text: ""
+        text: "",
+        chatId: message.context?.open_chat_id || null,
+        chatType: message.context?.open_chat_id ? "group" : null,
+        mentioned: true
       },
       panelCommand,
       {
@@ -239,6 +260,8 @@ export class FeishuWebhookService {
 
     const notify = await this.notifyIdentityBinding({
       senderId: message.senderId,
+      chatId: message.chatId,
+      chatType: message.chatType,
       displayName: identity.displayName,
       openId: identity.openId
     });
@@ -291,6 +314,8 @@ export class FeishuWebhookService {
     const guidanceReason = this.normalizeCommandGuidanceReason(reason);
     const notify = await this.notifyCommandGuidance({
       senderId: message.senderId,
+      chatId: message.chatId,
+      chatType: message.chatType,
       reason: guidanceReason
     });
 
@@ -361,9 +386,11 @@ export class FeishuWebhookService {
     }
 
     const result = await panelService.handlePanelCommand(message.senderId, command, refresh);
+    const replyTarget = this.resolveReplyTarget(message);
     const notifyInput = {
       card: result.card,
-      recipientOpenId: message.senderId
+      recipientOpenId: replyTarget.recipientOpenId,
+      recipientChatId: replyTarget.recipientChatId
     };
 
     if (!awaitNotify) {
@@ -416,7 +443,12 @@ export class FeishuWebhookService {
     };
   }
 
-  private async executeParsedCommand(message: FeishuIncomingMessage, parsed: ParsedCommand, selectedModelSlug: string | null) {
+  private async executeParsedCommand(
+    message: FeishuIncomingMessage,
+    parsed: ParsedCommand,
+    selectedModelSlug: string | null,
+    selectedProjectPath: string | null = null
+  ) {
     if (!parsed.prompt.trim()) {
       return this.handleCommandGuidance(message, "ambiguous_command");
     }
@@ -425,7 +457,15 @@ export class FeishuWebhookService {
     let sessionId: string;
     let threadRef: string | null;
     try {
-      sessionId = parsed.newSession ? randomUUID() : this.resolveSessionId(parsed.sessionId, parsed.senderId, connectorConfig.sessionPrefix);
+      sessionId = parsed.newSession
+        ? randomUUID()
+        : this.resolveSessionId({
+            explicitSessionId: parsed.sessionId,
+            senderId: parsed.senderId,
+            chatType: message.chatType,
+            chatId: message.chatId,
+            fallbackSessionPrefix: connectorConfig.sessionPrefix
+          });
       threadRef = this.resolveThreadRef(sessionId, parsed.threadSelector);
     } catch (error) {
       if (error instanceof AppError && this.isCommandGuidanceError(error.code)) {
@@ -478,6 +518,14 @@ export class FeishuWebhookService {
       createdAt: now,
       updatedAt: now
     });
+    this.upsertSessionRoute({
+      sessionId,
+      senderOpenId: parsed.senderId,
+      chatType: message.chatType,
+      chatId: message.chatId,
+      platformMessageId: parsed.platformMessageId,
+      now
+    });
 
     this.deps.taskRepository.create({
       taskId,
@@ -520,6 +568,7 @@ export class FeishuWebhookService {
     }
 
     const status = risk.level === "high" ? "pending_confirm" : "running";
+    const replyTarget = this.resolveReplyTarget(message);
     const notify = await this.notifyTaskStatus({
       taskId,
       sessionId,
@@ -528,7 +577,8 @@ export class FeishuWebhookService {
       taskTitle: parsed.prompt,
       detail: parsed.prompt,
       actorId: parsed.senderId,
-      recipientOpenId: parsed.senderId,
+      recipientOpenId: replyTarget.recipientOpenId,
+      recipientChatId: replyTarget.recipientChatId,
       threadRef
     });
     await this.deps.auditLogRepository.create({
@@ -557,7 +607,8 @@ export class FeishuWebhookService {
             prompt: parsed.prompt,
             actorId: parsed.senderId,
             threadRef,
-            modelSlug: selectedModelSlug
+            modelSlug: selectedModelSlug,
+            projectPath: parsed.newSession ? selectedProjectPath : null
           });
 
     this.deps.feishuCommandPanelService?.clearComposeMode(parsed.senderId);
@@ -583,18 +634,33 @@ export class FeishuWebhookService {
     };
   }
 
-  private resolveSessionId(explicitSessionId: string | null, senderId: string, fallbackSessionPrefix: string) {
-    const explicit = (explicitSessionId || "").trim();
+  private resolveSessionId(input: {
+    explicitSessionId: string | null;
+    senderId: string;
+    chatType: FeishuSessionRouteChatType | null;
+    chatId: string | null;
+    fallbackSessionPrefix: string;
+  }) {
+    const explicit = (input.explicitSessionId || "").trim();
     if (explicit) {
       return explicit;
     }
 
-    const latestSession = this.deps.messageRepository.findLatestSessionIdBySender(senderId, "feishu");
+    const latestSessionByRoute = this.resolveLatestSessionByRoute({
+      senderOpenId: input.senderId,
+      chatType: input.chatType,
+      chatId: input.chatId
+    });
+    if (latestSessionByRoute) {
+      return latestSessionByRoute;
+    }
+
+    const latestSession = this.deps.messageRepository.findLatestSessionIdBySender(input.senderId, "feishu");
     if (latestSession) {
       return latestSession;
     }
 
-    const fallback = (fallbackSessionPrefix || "").trim();
+    const fallback = (input.fallbackSessionPrefix || "").trim();
     if (fallback) {
       return fallback;
     }
@@ -648,6 +714,94 @@ export class FeishuWebhookService {
     throw new AppError("THREAD_NOT_FOUND", 404, `Thread not found for selector: ${selector}`);
   }
 
+  private resolveLatestSessionByRoute(input: {
+    senderOpenId: string;
+    chatType: FeishuSessionRouteChatType | null;
+    chatId: string | null;
+  }) {
+    if (input.chatType === "group" && input.chatId) {
+      return this.deps.feishuSessionRouteRepository.findLatestSessionIdBySenderAndChat({
+        senderOpenId: input.senderOpenId,
+        chatType: "group",
+        chatId: input.chatId
+      });
+    }
+
+    if (input.chatType === "p2p") {
+      return this.deps.feishuSessionRouteRepository.findLatestSessionIdBySenderAndChat({
+        senderOpenId: input.senderOpenId,
+        chatType: "p2p",
+        chatId: null
+      });
+    }
+
+    return null;
+  }
+
+  private upsertSessionRoute(input: {
+    sessionId: string;
+    senderOpenId: string;
+    chatType: FeishuSessionRouteChatType | null;
+    chatId: string | null;
+    platformMessageId: string | null;
+    now: string;
+  }) {
+    if (!this.isOpenId(input.senderOpenId)) {
+      return;
+    }
+
+    const isGroup = input.chatType === "group" && Boolean((input.chatId || "").trim());
+    this.deps.feishuSessionRouteRepository.upsert({
+      sessionId: input.sessionId,
+      sourcePlatform: "feishu",
+      chatType: isGroup ? "group" : "p2p",
+      chatId: isGroup ? input.chatId!.trim() : null,
+      senderOpenId: input.senderOpenId,
+      lastPlatformMessageId: input.platformMessageId,
+      routeStatus: "active",
+      createdAt: input.now,
+      updatedAt: input.now
+    });
+  }
+
+  private validateIncomingRoute(message: FeishuIncomingMessage) {
+    if (message.chatType !== "group") {
+      return {
+        accepted: true
+      } as const;
+    }
+
+    if (message.mentioned) {
+      return {
+        accepted: true
+      } as const;
+    }
+
+    return {
+      accepted: true,
+      ignored: true,
+      reason: "group_not_mentioned"
+    } as const;
+  }
+
+  private resolveReplyTarget(message: {
+    senderId: string;
+    chatType: FeishuSessionRouteChatType | null;
+    chatId: string | null;
+  }) {
+    if (message.chatType === "group" && (message.chatId || "").trim()) {
+      return {
+        recipientOpenId: null,
+        recipientChatId: message.chatId!.trim()
+      };
+    }
+
+    return {
+      recipientOpenId: message.senderId,
+      recipientChatId: null
+    };
+  }
+
   private dispatchTask(input: {
     taskId: string;
     sessionId: string;
@@ -655,6 +809,7 @@ export class FeishuWebhookService {
     actorId: string;
     threadRef?: string | null;
     modelSlug?: string | null;
+    projectPath?: string | null;
   }) {
     if (!this.deps.codexDispatchService) {
       return {
@@ -672,7 +827,8 @@ export class FeishuWebhookService {
       prompt: input.prompt,
       actorId: input.actorId,
       threadRef: input.threadRef ?? null,
-      modelSlug: input.modelSlug ?? null
+      modelSlug: input.modelSlug ?? null,
+      projectPath: input.projectPath ?? null
     });
     return {
       accepted: result.accepted,
@@ -692,6 +848,7 @@ export class FeishuWebhookService {
     detail?: string | null;
     actorId: string;
     recipientOpenId?: string | null;
+    recipientChatId?: string | null;
     threadRef?: string | null;
   }) {
     if (!this.deps.feishuNotifier) {
@@ -706,7 +863,7 @@ export class FeishuWebhookService {
     return this.deps.feishuNotifier.notifyTaskStatus(input);
   }
 
-  private notifyCard(input: { card: string; recipientOpenId?: string | null }) {
+  private notifyCard(input: { card: string; recipientOpenId?: string | null; recipientChatId?: string | null }) {
     if (!this.deps.feishuNotifier) {
       return Promise.resolve({
         sent: false,
@@ -719,7 +876,13 @@ export class FeishuWebhookService {
     return this.deps.feishuNotifier.notifyCard(input);
   }
 
-  private notifyIdentityBinding(input: { senderId: string; displayName: string; openId: string }) {
+  private notifyIdentityBinding(input: {
+    senderId: string;
+    chatId: string | null;
+    chatType: FeishuSessionRouteChatType | null;
+    displayName: string;
+    openId: string;
+  }) {
     if (!this.deps.feishuNotifier) {
       return Promise.resolve({
         sent: false,
@@ -729,13 +892,24 @@ export class FeishuWebhookService {
       });
     }
 
+    const replyTarget = this.resolveReplyTarget({
+      senderId: input.senderId,
+      chatId: input.chatId,
+      chatType: input.chatType
+    });
     return this.deps.feishuNotifier.notifyText({
       text: `已绑定姓名：${input.displayName} (${input.openId})`,
-      recipientOpenId: input.senderId
+      recipientOpenId: replyTarget.recipientOpenId,
+      recipientChatId: replyTarget.recipientChatId
     });
   }
 
-  private notifyCommandGuidance(input: { senderId: string; reason: string }) {
+  private notifyCommandGuidance(input: {
+    senderId: string;
+    chatId: string | null;
+    chatType: FeishuSessionRouteChatType | null;
+    reason: string;
+  }) {
     if (!this.deps.feishuNotifier) {
       return Promise.resolve({
         sent: false,
@@ -746,9 +920,15 @@ export class FeishuWebhookService {
     }
 
     const normalizedReason = this.normalizeCommandGuidanceReason(input.reason);
+    const replyTarget = this.resolveReplyTarget({
+      senderId: input.senderId,
+      chatId: input.chatId,
+      chatType: input.chatType
+    });
     return this.deps.feishuNotifier.notifyCard({
       card: buildFeishuCommandHelpCard(normalizedReason),
-      recipientOpenId: input.senderId
+      recipientOpenId: replyTarget.recipientOpenId,
+      recipientChatId: replyTarget.recipientChatId
     });
   }
 
@@ -798,5 +978,9 @@ export class FeishuWebhookService {
     }
 
     return "ambiguous_command";
+  }
+
+  private isOpenId(value: string) {
+    return /^ou_[a-zA-Z0-9_-]+$/.test((value || "").trim());
   }
 }

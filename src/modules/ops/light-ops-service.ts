@@ -9,6 +9,7 @@ import { AppError } from "../../lib/errors";
 import { CodexDispatchService } from "../codex/codex-dispatch-service";
 import { FeishuOutboundNotifier } from "../notifications/feishu-outbound-notifier";
 import { AuditLogRepository } from "../../storage/repositories/audit-log-repository";
+import { FeishuSessionRouteRepository } from "../../storage/repositories/feishu-session-route-repository";
 import { MessageRepository } from "../../storage/repositories/message-repository";
 import { RiskConfirmationRepository } from "../../storage/repositories/risk-confirmation-repository";
 import { TaskRepository } from "../../storage/repositories/task-repository";
@@ -20,6 +21,7 @@ type LightOpsServiceDeps = {
   toolSessionRepository: ToolSessionRepository;
   messageRepository: MessageRepository;
   auditLogRepository: AuditLogRepository;
+  feishuSessionRouteRepository: FeishuSessionRouteRepository;
   codexDispatchService?: CodexDispatchService;
   feishuNotifier?: FeishuOutboundNotifier;
 };
@@ -98,7 +100,7 @@ export class LightOpsService {
       taskTitle: task.summary || task.taskId,
       detail: "任务已由网页管理端停止",
       actorId: actor.actorId,
-      recipientOpenId: this.resolveRecipientOpenId(task.sessionId, actor.actorId)
+      ...this.resolveRecipientRoute(task.sessionId, actor.actorId)
     });
 
     return {
@@ -148,7 +150,8 @@ export class LightOpsService {
     });
 
     const notifyText = `手动重试通知\nTask=${task.taskId}\nSession=${task.sessionId}\n状态=${task.status}`;
-    const notify = await this.notifyText(notifyText, this.resolveRecipientOpenId(task.sessionId, actor.actorId));
+    const notifyTarget = this.resolveRecipientRoute(task.sessionId, actor.actorId);
+    const notify = await this.notifyText(notifyText, notifyTarget.recipientOpenId, notifyTarget.recipientChatId ?? null);
 
     return {
       success: true,
@@ -239,7 +242,7 @@ export class LightOpsService {
       taskTitle: task?.summary || risk.taskId,
       detail: riskStatus === "approved" ? "高风险指令已确认并恢复执行" : "高风险指令已拒绝并终止",
       actorId: actor.actorId,
-      recipientOpenId: this.resolveRecipientOpenId(risk.sessionId, actor.actorId)
+      ...this.resolveRecipientRoute(risk.sessionId, actor.actorId)
     });
 
     const dispatch =
@@ -300,6 +303,7 @@ export class LightOpsService {
     detail?: string | null;
     actorId: string;
     recipientOpenId?: string | null;
+    recipientChatId?: string | null;
   }) {
     if (!this.deps.feishuNotifier) {
       return {
@@ -313,7 +317,7 @@ export class LightOpsService {
     return this.deps.feishuNotifier.notifyTaskStatus(input);
   }
 
-  private async notifyText(text: string, recipientOpenId: string | null) {
+  private async notifyText(text: string, recipientOpenId: string | null, recipientChatId: string | null) {
     if (!this.deps.feishuNotifier) {
       return {
         sent: false,
@@ -325,21 +329,48 @@ export class LightOpsService {
 
     return this.deps.feishuNotifier.notifyText({
       text,
-      recipientOpenId
+      recipientOpenId,
+      recipientChatId
     });
   }
 
-  private resolveRecipientOpenId(sessionId: string, actorId: string) {
+  private resolveRecipientRoute(sessionId: string, actorId: string) {
+    const route = this.deps.feishuSessionRouteRepository.findBySessionId(sessionId);
+    if (route?.routeStatus === "active" && route.sourcePlatform === "feishu") {
+      if (route.chatType === "group" && (route.chatId || "").trim()) {
+        return {
+          recipientOpenId: null,
+          recipientChatId: route.chatId!.trim()
+        };
+      }
+
+      if (this.isOpenId(route.senderOpenId)) {
+        return {
+          recipientOpenId: route.senderOpenId,
+          recipientChatId: null
+        };
+      }
+    }
+
     if (this.isOpenId(actorId)) {
-      return actorId;
+      return {
+        recipientOpenId: actorId,
+        recipientChatId: null
+      };
     }
 
     const session = this.deps.toolSessionRepository.findBySessionId(sessionId);
     if (session?.createdBy && this.isOpenId(session.createdBy)) {
-      return session.createdBy;
+      return {
+        recipientOpenId: session.createdBy,
+        recipientChatId: null
+      };
     }
 
-    return null;
+    return {
+      recipientOpenId: null,
+      recipientChatId: null
+    };
   }
 
   private isOpenId(value: string) {

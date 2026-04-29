@@ -9,6 +9,7 @@ import type { CodexModelCatalogRecord } from "../codex/codex-model-catalog-servi
 
 export type FeishuPanelCommand =
   | { actionType: "view_projects" }
+  | { actionType: "view_projects_by_path"; selector: string }
   | { actionType: "select_project"; selector: string }
   | { actionType: "view_sessions"; page?: number; window?: FeishuPanelSessionWindow }
   | { actionType: "view_project_sessions"; page?: number; window?: FeishuPanelSessionWindow }
@@ -60,6 +61,7 @@ export type FeishuPanelGatewayStatus = {
 };
 
 const PANEL_ACTION_PATTERN = /^(查看|列出|展示)?(项目|session|会话|线程|模型|网关|状态|当前选择|帮助)(列表|状态)?$/i;
+const PANEL_VIEW_PROJECTS_BY_PATH_PATTERN = /^(查看|列出|展示|选择)?项目路径[：:]\s*(.+)$/i;
 const PANEL_SELECT_PROJECT_PATTERN = /^(选择|切换|使用)项目[：:]\s*(.+)$/i;
 const PANEL_SELECT_SESSION_PATTERN = /^(选择|切换|使用)(session|会话|线程)[：:]\s*(.+)$/i;
 const PANEL_SELECT_MODEL_PATTERN = /^(选择|切换|使用)模型[：:]\s*(.+)$/i;
@@ -77,6 +79,14 @@ export function parseFeishuPanelCommand(text: string): FeishuPanelCommand | null
 
   if (/^(查看|列出|展示)?项目(列表)?$/i.test(rawText)) {
     return { actionType: "view_projects" };
+  }
+
+  const projectPathMatched = rawText.match(PANEL_VIEW_PROJECTS_BY_PATH_PATTERN);
+  if (projectPathMatched) {
+    return {
+      actionType: "view_projects_by_path",
+      selector: projectPathMatched[2].trim()
+    };
   }
 
   const projectMatched = rawText.match(PANEL_SELECT_PROJECT_PATTERN);
@@ -169,6 +179,13 @@ export function parseFeishuPanelActionValue(value: unknown): FeishuPanelCommand 
     return { actionType: "view_projects" };
   }
 
+  if (actionType === "view_projects_by_path") {
+    return {
+      actionType: "view_projects_by_path",
+      selector: String(record.selector || record.projectPath || record.path || "").trim()
+    };
+  }
+
   if (actionType === "select_project") {
     return {
       actionType: "select_project",
@@ -251,6 +268,9 @@ export function parseFeishuPanelActionValue(value: unknown): FeishuPanelCommand 
 export function buildFeishuProjectListCard(input: {
   context: FeishuPanelContextRecord;
   projects: FeishuPanelProjectSummary[];
+  title?: string;
+  intro?: string;
+  emptyMessage?: string;
 }) {
   const topProjects = input.projects.slice(0, 12);
   const elements: Array<Record<string, unknown>> = [
@@ -263,7 +283,7 @@ export function buildFeishuProjectListCard(input: {
   if (topProjects.length === 0) {
     elements.push({
       tag: "markdown",
-      content: "【暂无项目】\n当前本地会话目录里没有可展示的项目。"
+      content: input.emptyMessage || "【暂无项目】\n当前本地会话目录里没有可展示的项目。"
     });
     elements.push(buildActionBlock([{ text: "查看网关状态", value: { panelAction: "view_gateway_status" } }]));
   } else {
@@ -298,9 +318,9 @@ export function buildFeishuProjectListCard(input: {
   elements.push(...buildBottomActionBlocks());
 
   return buildCard({
-    title: "项目列表",
+    title: input.title || "项目列表",
     template: "wathet",
-    intro: "按项目分组展示最近的本地 Codex 会话，先选项目再选 session。",
+    intro: input.intro || "按项目分组展示最近的本地 Codex 会话，先选项目再选 session。",
     elements
   });
 }

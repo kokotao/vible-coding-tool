@@ -248,4 +248,84 @@ describe("codex local sessions api", () => {
       await app.close();
     }
   });
+
+  it("resolves ~/.codex path on Windows-style USERPROFILE and falls back to ~/.codex when sessions folder is missing", async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "codex-win-home-"));
+    const codexRoot = join(fakeHome, ".codex");
+    const dayPath = join(codexRoot, "2026", "04", "28");
+    mkdirSync(dayPath, { recursive: true });
+
+    const threadId = "019dca99-1382-75d3-9d93-d743ff4e7999";
+    writeFileSync(
+      join(dayPath, `rollout-2026-04-28T08-00-00-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: threadId,
+            timestamp: "2026-04-28T08:00:00.000Z",
+            cwd: "C:\\Users\\demo\\workSpace\\project-win"
+          }
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: "windows path scan smoke test"
+          }
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    process.env.HOME = "";
+    process.env.USERPROFILE = fakeHome;
+
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: "~/.codex/sessions",
+        codexLocalSessionsScanIntervalMs: 1000
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/codex/local-sessions?limit=20&refresh=true"
+      });
+
+      expect(response.statusCode).toBe(200);
+      const payload = response.json() as {
+        rootPath: string;
+        totalFiles: number;
+        items: Array<{ threadId: string }>;
+      };
+      expect(payload.rootPath).toBe(codexRoot);
+      expect(payload.totalFiles).toBe(1);
+      expect(payload.items[0]?.threadId).toBe(threadId);
+    } finally {
+      await app.close();
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      if (previousUserProfile === undefined) {
+        delete process.env.USERPROFILE;
+      } else {
+        process.env.USERPROFILE = previousUserProfile;
+      }
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
 });

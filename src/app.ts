@@ -37,6 +37,7 @@ import { AuditLogRepository } from "./storage/repositories/audit-log-repository"
 import { ConnectorConfigRepository } from "./storage/repositories/connector-config-repository";
 import { FeishuIdentityRepository } from "./storage/repositories/feishu-identity-repository";
 import { FeishuPanelContextRepository } from "./storage/repositories/feishu-panel-context-repository";
+import { FeishuSessionRouteRepository } from "./storage/repositories/feishu-session-route-repository";
 import { IdempotencyRepository } from "./storage/repositories/idempotency-repository";
 import { MessageRepository } from "./storage/repositories/message-repository";
 import { RiskConfirmationRepository } from "./storage/repositories/risk-confirmation-repository";
@@ -75,6 +76,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const connectorConfigRepository = new ConnectorConfigRepository(db);
   const feishuIdentityRepository = new FeishuIdentityRepository(db);
   const feishuPanelContextRepository = new FeishuPanelContextRepository(db);
+  const feishuSessionRouteRepository = new FeishuSessionRouteRepository(db);
   const connectorConfigService = new ConnectorConfigService(connectorConfigRepository);
   const connectorService = new ConnectorService(connectorConfigService);
   const feishuNotifier = new FeishuOutboundNotifier(connectorConfigService, {
@@ -124,6 +126,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     auditLogRepository,
     idempotencyRepository,
     sessionThreadRepository,
+    feishuSessionRouteRepository,
     feishuNotifier,
     terminalEventStream: options.terminalEventStream
   });
@@ -153,6 +156,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     toolSessionRepository,
     messageRepository,
     auditLogRepository,
+    feishuSessionRouteRepository,
     codexDispatchService,
     feishuNotifier
   });
@@ -232,6 +236,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       auditLogRepository,
       connectorConfigService,
       idempotencyRepository,
+      feishuSessionRouteRepository,
       codexDispatchService,
       feishuNotifier,
       feishuIdentityService,
