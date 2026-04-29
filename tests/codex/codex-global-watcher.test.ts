@@ -148,6 +148,13 @@ describe("codex global watcher", () => {
               reasoningOutputTokens?: number;
               totalTokens?: number;
             };
+            cumulativeTokenUsageDetail?: {
+              inputTokens?: number;
+              cachedInputTokens?: number;
+              outputTokens?: number;
+              reasoningOutputTokens?: number;
+              totalTokens?: number;
+            };
             lastTokenUsageDetail?: {
               inputTokens?: number;
               cachedInputTokens?: number;
@@ -163,9 +170,16 @@ describe("codex global watcher", () => {
         expect(seenBodies[0]).toContain("完成了自动回推测试");
         expect(postedPayload.runtimeMeta).toMatchObject({
           modelSlug: "gpt-5.4",
-          tokenUsage: 43210
+          tokenUsage: 1280
         });
         expect(postedPayload.runtimeMeta?.tokenUsageDetail).toMatchObject({
+          inputTokens: 900,
+          cachedInputTokens: 120,
+          outputTokens: 380,
+          reasoningOutputTokens: 60,
+          totalTokens: 1280
+        });
+        expect(postedPayload.runtimeMeta?.cumulativeTokenUsageDetail).toMatchObject({
           inputTokens: 40000,
           cachedInputTokens: 2000,
           outputTokens: 1000,
@@ -297,6 +311,317 @@ describe("codex global watcher", () => {
 
         expect(seenBodies).toHaveLength(1);
         expect(seenBodies[0]).toContain("codex-turn-turn-new");
+      } finally {
+        await watcher.stop();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses token_count wrapped in event_msg payload when posting runtime meta", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-watch-token-event-msg-"));
+    const sessionDir = join(tempDir, "sessions", "019dd7df-0d89-7e33-8c56-55c3b0fb43f4");
+    const rolloutPath = join(sessionDir, "rollout-019dd7df-0d89-7e33-8c56-55c3b0fb43f4.jsonl");
+    const statePath = join(tempDir, "state.json");
+    const seenBodies: string[] = [];
+    const { fetchImpl } = createFetchMock([
+      {
+        match: /\/health$/,
+        response: () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+      },
+      {
+        match: /\/api\/codex\/events$/,
+        response: ({ bodyText }) => {
+          seenBodies.push(bodyText);
+          return new Response(JSON.stringify({ accepted: true }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          });
+        }
+      }
+    ]);
+
+    try {
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(rolloutPath, "", "utf8");
+
+      const watcher = await startCodexGlobalWatcher({
+        gatewayUrl: "http://mock.gateway",
+        statePath,
+        pollIntervalMs: 50,
+        sessionId: "feishu-codex-token-wrapped",
+        senderId: "codex_global_watcher",
+        recipientOpenId: null,
+        sessionsRoot: join(tempDir, "sessions"),
+        archivedSessionsRoot: join(tempDir, "archived_sessions"),
+        scanArchived: false,
+        bootstrapMode: "tail",
+        fetchImpl
+      });
+
+      try {
+        writeFileSync(
+          rolloutPath,
+          [
+            JSON.stringify({
+              timestamp: "2026-04-29T06:13:33.669Z",
+              type: "event_msg",
+              payload: {
+                type: "task_started",
+                turn_id: "turn-token-001",
+                started_at: 1777443212
+              }
+            }),
+            JSON.stringify({
+              timestamp: "2026-04-29T06:13:40.266Z",
+              type: "event_msg",
+              payload: {
+                type: "token_count",
+                info: {
+                  total_token_usage: {
+                    input_tokens: 10556,
+                    cached_input_tokens: 9088,
+                    output_tokens: 14,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 10570
+                  },
+                  last_token_usage: {
+                    input_tokens: 10556,
+                    cached_input_tokens: 9088,
+                    output_tokens: 14,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 10570
+                  }
+                }
+              }
+            }),
+            JSON.stringify({
+              timestamp: "2026-04-29T06:13:40.268Z",
+              type: "event_msg",
+              payload: {
+                type: "task_complete",
+                turn_id: "turn-token-001",
+                last_agent_message: "token wrapped event test"
+              }
+            }),
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+
+        await new Promise<void>((resolve, reject) => {
+          const startedAt = Date.now();
+          const poll = () => {
+            if (seenBodies.length > 0) {
+              resolve();
+              return;
+            }
+
+            if (Date.now() - startedAt > 3000) {
+              reject(new Error("watcher did not post wrapped token_count event in time"));
+              return;
+            }
+
+            setTimeout(poll, 25);
+          };
+
+          poll();
+        });
+
+        expect(seenBodies).toHaveLength(1);
+        const postedPayload = JSON.parse(seenBodies[0]) as {
+          runtimeMeta?: {
+            tokenUsage?: number;
+            tokenUsageDetail?: {
+              inputTokens?: number;
+              cachedInputTokens?: number;
+              outputTokens?: number;
+              reasoningOutputTokens?: number;
+              totalTokens?: number;
+            };
+            cumulativeTokenUsageDetail?: {
+              inputTokens?: number;
+              cachedInputTokens?: number;
+              outputTokens?: number;
+              reasoningOutputTokens?: number;
+              totalTokens?: number;
+            };
+            lastTokenUsageDetail?: {
+              inputTokens?: number;
+              cachedInputTokens?: number;
+              outputTokens?: number;
+              reasoningOutputTokens?: number;
+              totalTokens?: number;
+            };
+          };
+        };
+        expect(postedPayload.runtimeMeta?.tokenUsage).toBe(10570);
+        expect(postedPayload.runtimeMeta?.tokenUsageDetail).toMatchObject({
+          inputTokens: 10556,
+          cachedInputTokens: 9088,
+          outputTokens: 14,
+          reasoningOutputTokens: 0,
+          totalTokens: 10570
+        });
+        expect(postedPayload.runtimeMeta?.lastTokenUsageDetail).toMatchObject({
+          inputTokens: 10556,
+          cachedInputTokens: 9088,
+          outputTokens: 14,
+          reasoningOutputTokens: 0,
+          totalTokens: 10570
+        });
+      } finally {
+        await watcher.stop();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses usage from turn.completed when token_count is absent", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-watch-turn-completed-"));
+    const sessionDir = join(tempDir, "sessions", "019dd8b5-0a00-73c1-a8fd-fbcdf7fe671a");
+    const rolloutPath = join(sessionDir, "rollout-019dd8b5-0a00-73c1-a8fd-fbcdf7fe671a.jsonl");
+    const statePath = join(tempDir, "state.json");
+    const seenBodies: string[] = [];
+    const { fetchImpl } = createFetchMock([
+      {
+        match: /\/health$/,
+        response: () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+      },
+      {
+        match: /\/api\/codex\/events$/,
+        response: ({ bodyText }) => {
+          seenBodies.push(bodyText);
+          return new Response(JSON.stringify({ accepted: true }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          });
+        }
+      }
+    ]);
+
+    try {
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(rolloutPath, "", "utf8");
+
+      const watcher = await startCodexGlobalWatcher({
+        gatewayUrl: "http://mock.gateway",
+        statePath,
+        pollIntervalMs: 50,
+        sessionId: "feishu-codex-turn-completed",
+        senderId: "codex_global_watcher",
+        recipientOpenId: null,
+        sessionsRoot: join(tempDir, "sessions"),
+        archivedSessionsRoot: join(tempDir, "archived_sessions"),
+        scanArchived: false,
+        bootstrapMode: "tail",
+        fetchImpl
+      });
+
+      try {
+        writeFileSync(
+          rolloutPath,
+          [
+            JSON.stringify({
+              timestamp: "2026-04-29T10:07:06.000Z",
+              type: "event_msg",
+              payload: {
+                type: "task_started",
+                turn_id: "turn-usage-001",
+                started_at: 1777457226
+              }
+            }),
+            JSON.stringify({
+              timestamp: "2026-04-29T10:07:45.000Z",
+              type: "turn.completed",
+              usage: {
+                input_tokens: 10357,
+                cached_input_tokens: 8576,
+                output_tokens: 17,
+                reasoning_output_tokens: 0
+              }
+            }),
+            JSON.stringify({
+              timestamp: "2026-04-29T10:07:45.100Z",
+              type: "event_msg",
+              payload: {
+                type: "task_complete",
+                turn_id: "turn-usage-001",
+                last_agent_message: "turn completed usage test"
+              }
+            }),
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+
+        await new Promise<void>((resolve, reject) => {
+          const startedAt = Date.now();
+          const poll = () => {
+            if (seenBodies.length > 0) {
+              resolve();
+              return;
+            }
+
+            if (Date.now() - startedAt > 3000) {
+              reject(new Error("watcher did not post turn.completed usage event in time"));
+              return;
+            }
+
+            setTimeout(poll, 25);
+          };
+
+          poll();
+        });
+
+        expect(seenBodies).toHaveLength(1);
+        const postedPayload = JSON.parse(seenBodies[0]) as {
+          runtimeMeta?: {
+            tokenUsage?: number;
+            tokenUsageDetail?: {
+              inputTokens?: number;
+              cachedInputTokens?: number;
+              outputTokens?: number;
+              reasoningOutputTokens?: number;
+              totalTokens?: number;
+            };
+            cumulativeTokenUsageDetail?: {
+              inputTokens?: number;
+              cachedInputTokens?: number;
+              outputTokens?: number;
+              reasoningOutputTokens?: number;
+              totalTokens?: number;
+            };
+            lastTokenUsageDetail?: {
+              inputTokens?: number;
+              cachedInputTokens?: number;
+              outputTokens?: number;
+              reasoningOutputTokens?: number;
+              totalTokens?: number;
+            };
+          };
+        };
+        expect(postedPayload.runtimeMeta?.tokenUsage).toBe(10374);
+        expect(postedPayload.runtimeMeta?.tokenUsageDetail).toMatchObject({
+          inputTokens: 10357,
+          cachedInputTokens: 8576,
+          outputTokens: 17,
+          reasoningOutputTokens: 0,
+          totalTokens: 10374
+        });
+        expect(postedPayload.runtimeMeta?.lastTokenUsageDetail).toMatchObject({
+          inputTokens: 10357,
+          cachedInputTokens: 8576,
+          outputTokens: 17,
+          reasoningOutputTokens: 0,
+          totalTokens: 10374
+        });
       } finally {
         await watcher.stop();
       }

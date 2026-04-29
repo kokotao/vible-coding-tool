@@ -22,8 +22,18 @@ export type CodexRuntimeMeta = {
   tokenUsage?: number | null;
   modelSlug?: string | null;
   tokenUsageDetail?: CodexTokenUsageBreakdown | null;
+  tokenUsageSource?: "delta" | "last_usage" | "cumulative_fallback" | null;
+  cumulativeTokenUsageDetail?: CodexTokenUsageBreakdown | null;
+  baselineTokenUsageDetail?: CodexTokenUsageBreakdown | null;
   lastTokenUsageDetail?: CodexTokenUsageBreakdown | null;
 } | null;
+
+type TokenSnapshotRecord = {
+  type?: string;
+  payload?: Record<string, unknown>;
+  info?: Record<string, unknown>;
+  usage?: Record<string, unknown>;
+};
 
 export function parseCodexTokenCountSnapshot(record: {
   payload?: Record<string, unknown>;
@@ -43,18 +53,53 @@ export function parseCodexTokenCountSnapshot(record: {
   } satisfies CodexTokenCountSnapshot;
 }
 
+export function parseCodexTokenCountSnapshotFromEventRecord(record: TokenSnapshotRecord | null | undefined) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  if (record.type === "token_count") {
+    return parseCodexTokenCountSnapshot(record);
+  }
+
+  if (record.type === "event_msg" && record.payload && typeof record.payload === "object") {
+    const payloadType = String((record.payload as Record<string, unknown>).type || "").trim();
+    if (payloadType === "token_count") {
+      return parseCodexTokenCountSnapshot(record.payload as { payload?: Record<string, unknown>; info?: Record<string, unknown> });
+    }
+    if (payloadType === "turn.completed") {
+      return parseCodexTurnCompletedUsageSnapshot(record.payload as TokenSnapshotRecord);
+    }
+  }
+
+  if (record.type === "turn.completed") {
+    return parseCodexTurnCompletedUsageSnapshot(record);
+  }
+
+  return null;
+}
+
 export function parseCodexTokenUsageBreakdown(value: unknown) {
   if (!value || typeof value !== "object") {
     return null;
   }
 
   const record = value as Record<string, unknown>;
+  const inputTokens = normalizeTokenCount(record.input_tokens ?? record.inputTokens);
+  const cachedInputTokens = normalizeTokenCount(record.cached_input_tokens ?? record.cachedInputTokens);
+  const outputTokens = normalizeTokenCount(record.output_tokens ?? record.outputTokens);
+  const reasoningOutputTokens = normalizeTokenCount(record.reasoning_output_tokens ?? record.reasoningOutputTokens);
+  const explicitTotalTokens = normalizeTokenCount(record.total_tokens ?? record.totalTokens);
+  const inferredTotalTokens =
+    explicitTotalTokens === null && inputTokens !== null && outputTokens !== null
+      ? inputTokens + outputTokens
+      : null;
   const usage = {
-    inputTokens: normalizeTokenCount(record.input_tokens),
-    cachedInputTokens: normalizeTokenCount(record.cached_input_tokens),
-    outputTokens: normalizeTokenCount(record.output_tokens),
-    reasoningOutputTokens: normalizeTokenCount(record.reasoning_output_tokens),
-    totalTokens: normalizeTokenCount(record.total_tokens)
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens: explicitTotalTokens ?? inferredTotalTokens
   } satisfies CodexTokenUsageBreakdown;
 
   if (
@@ -98,6 +143,90 @@ export function formatCodexTokenUsageBreakdown(
   ].join(" / ");
 }
 
+export function resolveCodexTaskTokenUsage(input: {
+  baselineUsage?: CodexTokenUsageBreakdown | null;
+  totalUsage?: CodexTokenUsageBreakdown | null;
+  lastUsage?: CodexTokenUsageBreakdown | null;
+}) {
+  const diff = subtractCodexTokenUsageBreakdown(input.totalUsage ?? null, input.baselineUsage ?? null);
+  if (diff) {
+    return {
+      usage: diff,
+      source: "delta"
+    } as const;
+  }
+
+  if (input.lastUsage) {
+    return {
+      usage: input.lastUsage,
+      source: "last_usage"
+    } as const;
+  }
+
+  if (input.totalUsage) {
+    return {
+      usage: input.totalUsage,
+      source: "cumulative_fallback"
+    } as const;
+  }
+
+  return null;
+}
+
+export function subtractCodexTokenUsageBreakdown(
+  after: CodexTokenUsageBreakdown | null,
+  before: CodexTokenUsageBreakdown | null
+) {
+  if (!after || !before) {
+    return null;
+  }
+
+  const usage = {
+    inputTokens: subtractTokenCount(after.inputTokens, before.inputTokens),
+    cachedInputTokens: subtractTokenCount(after.cachedInputTokens, before.cachedInputTokens),
+    outputTokens: subtractTokenCount(after.outputTokens, before.outputTokens),
+    reasoningOutputTokens: subtractTokenCount(after.reasoningOutputTokens, before.reasoningOutputTokens),
+    totalTokens: subtractTokenCount(after.totalTokens, before.totalTokens)
+  } satisfies CodexTokenUsageBreakdown;
+
+  if (
+    usage.inputTokens === null &&
+    usage.cachedInputTokens === null &&
+    usage.outputTokens === null &&
+    usage.reasoningOutputTokens === null &&
+    usage.totalTokens === null
+  ) {
+    return null;
+  }
+
+  return usage;
+}
+
 function normalizeTokenCount(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(Math.round(value), 0) : null;
+}
+
+function subtractTokenCount(after: number | null | undefined, before: number | null | undefined) {
+  if (typeof after !== "number" || typeof before !== "number") {
+    return null;
+  }
+
+  if (!Number.isFinite(after) || !Number.isFinite(before) || after < before) {
+    return null;
+  }
+
+  return Math.max(Math.round(after - before), 0);
+}
+
+function parseCodexTurnCompletedUsageSnapshot(record: TokenSnapshotRecord | null | undefined) {
+  const usageSource = record?.usage || record?.payload?.usage;
+  const usage = parseCodexTokenUsageBreakdown(usageSource);
+  if (!usage) {
+    return null;
+  }
+
+  return {
+    totalUsage: usage,
+    lastUsage: usage
+  } satisfies CodexTokenCountSnapshot;
 }

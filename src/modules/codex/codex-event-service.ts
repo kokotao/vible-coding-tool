@@ -74,6 +74,23 @@ export class CodexEventService {
     const taskResolved = this.findOrCreateTask(event, now);
     const task = taskResolved.task;
     const summary = this.resolveSummary(event, task);
+    if (!taskResolved.created && this.isLockedManualTerminalStatus(task.status) && this.isTerminalStatus(event.status)) {
+      return {
+        accepted: true,
+        duplicate: true,
+        eventId: event.eventId ?? null,
+        taskId: task.taskId,
+        sessionId: task.sessionId,
+        status: task.status,
+        message: "Ignored terminal codex event because task was manually stopped",
+        notify: {
+          sent: false,
+          skipped: true,
+          reason: "task_manually_stopped",
+          statusCode: null
+        }
+      };
+    }
     const finishedAt = this.resolveFinishedAt(event.status, now);
 
     const updatedTask =
@@ -323,6 +340,10 @@ export class CodexEventService {
 
   private isTerminalStatus(status: string): status is "succeeded" | "failed" {
     return status === "succeeded" || status === "failed";
+  }
+
+  private isLockedManualTerminalStatus(status: string) {
+    return status === "stopped" || status === "cancelled" || status === "rejected";
   }
 
   private resolveFinishedAt(status: CodexStatus, now: string) {

@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS feishu_panel_contexts (
   selected_session_title TEXT,
   selected_model_slug TEXT,
   selected_model_name TEXT,
+  selected_reasoning_level TEXT,
   pending_compose_mode TEXT,
   last_action TEXT,
   updated_at TEXT NOT NULL

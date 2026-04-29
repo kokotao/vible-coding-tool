@@ -1,5 +1,5 @@
 /**
- * @description 提供网页管理端轻操作能力，包括停任务、重试通知和风险确认/拒绝
+ * @description Provide light-weight ops actions: stop task, retry notification, and risk confirm/reject
  * @author Albert_Luo
  * @email 480199976@qq.com
  * @date 2026-04-26 18:20
@@ -62,6 +62,12 @@ export class LightOpsService {
 
     const actor = normalizeActor(actorInput);
     const now = new Date().toISOString();
+    const stopControl = await this.deps.codexDispatchService?.interruptTask({
+      taskId: task.taskId,
+      sessionId: task.sessionId,
+      actorId: actor.actorId
+    });
+    const stopDetail = (stopControl?.stopMessage || "").trim() || "Task terminated by operator";
 
     this.deps.taskRepository.updateStatus(task.taskId, "stopped", now);
     this.syncSessionStatus(task.sessionId, now, "paused");
@@ -73,7 +79,7 @@ export class LightOpsService {
       sourcePlatform: actor.sourcePlatform,
       platformMessageId: null,
       senderId: actor.actorId,
-      content: `任务 ${task.taskId} 已由网页管理端停止`,
+      content: `Task ${task.taskId} stopped\n${stopDetail}`,
       messageType: "manual_control",
       riskLevel: "low",
       status: "stopped",
@@ -88,7 +94,7 @@ export class LightOpsService {
       action: "stop_task",
       actorId: actor.actorId,
       result: "success",
-      detail: "Stopped via web console",
+      detail: `Stopped via web console; stopMethod=${stopControl?.method || "none"}; stopAccepted=${stopControl?.accepted ?? false}; stopSucceeded=${stopControl?.stopped ?? false}`,
       createdAt: now
     });
 
@@ -96,9 +102,9 @@ export class LightOpsService {
       taskId: task.taskId,
       sessionId: task.sessionId,
       status: "stopped",
-      summary: "任务已由网页管理端停止",
+      summary: "Task stopped",
       taskTitle: task.summary || task.taskId,
-      detail: "任务已由网页管理端停止",
+      detail: stopDetail,
       actorId: actor.actorId,
       ...this.resolveRecipientRoute(task.sessionId, actor.actorId)
     });
@@ -110,9 +116,12 @@ export class LightOpsService {
       status: "stopped",
       changed: true,
       message: "Task stopped",
-      notify
+      stoppedMessage: stopDetail,
+      notify,
+      stopControl
     };
   }
+
 
   async retryNotify(taskId: string, actorInput?: LightOpsActorInput) {
     const task = this.deps.taskRepository.findByTaskId(taskId);
@@ -130,7 +139,7 @@ export class LightOpsService {
       sourcePlatform: actor.sourcePlatform,
       platformMessageId: null,
       senderId: actor.actorId,
-      content: `任务 ${task.taskId} 已触发手动重试通知，当前状态：${task.status}`,
+      content: `Task ${task.taskId} retry notification requested; current status: ${task.status}`,
       messageType: "manual_notify",
       riskLevel: "low",
       status: "queued",
@@ -149,7 +158,7 @@ export class LightOpsService {
       createdAt: now
     });
 
-    const notifyText = `手动重试通知\nTask=${task.taskId}\nSession=${task.sessionId}\n状态=${task.status}`;
+    const notifyText = `Manual retry notify\nTask=${task.taskId}\nSession=${task.sessionId}\nStatus=${task.status}`;
     const notifyTarget = this.resolveRecipientRoute(task.sessionId, actor.actorId);
     const notify = await this.notifyText(notifyText, notifyTarget.recipientOpenId, notifyTarget.recipientChatId ?? null);
 
@@ -214,8 +223,8 @@ export class LightOpsService {
       senderId: actor.actorId,
       content:
         riskStatus === "approved"
-          ? `高风险指令已确认，任务 ${risk.taskId} 恢复执行`
-          : `高风险指令已拒绝，任务 ${risk.taskId} 终止`,
+          ? `High risk command approved; task ${risk.taskId} resumed`
+          : `High risk command rejected; task ${risk.taskId} terminated`,
       messageType: "risk_decision",
       riskLevel: "high",
       status: riskStatus === "approved" ? "running" : "rejected",
@@ -238,9 +247,9 @@ export class LightOpsService {
       taskId: risk.taskId,
       sessionId: risk.sessionId,
       status: taskStatus,
-      summary: riskStatus === "approved" ? "高风险指令已确认并恢复执行" : "高风险指令已拒绝并终止",
+      summary: riskStatus === "approved" ? "High risk command approved and resumed" : "High risk command rejected",
       taskTitle: task?.summary || risk.taskId,
-      detail: riskStatus === "approved" ? "高风险指令已确认并恢复执行" : "高风险指令已拒绝并终止",
+      detail: riskStatus === "approved" ? "High risk command approved and resumed" : "High risk command rejected",
       actorId: actor.actorId,
       ...this.resolveRecipientRoute(risk.sessionId, actor.actorId)
     });

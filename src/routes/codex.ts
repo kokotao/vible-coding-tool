@@ -28,7 +28,26 @@ const codexEventSchema = z.object({
       durationMs: z.number().int().nonnegative().nullish(),
       tokenUsage: z.number().int().nonnegative().nullish(),
       modelSlug: z.string().nullish(),
+      tokenUsageSource: z.enum(["delta", "last_usage", "cumulative_fallback"]).nullish(),
       tokenUsageDetail: z
+        .object({
+          inputTokens: z.number().int().nonnegative().nullish(),
+          cachedInputTokens: z.number().int().nonnegative().nullish(),
+          outputTokens: z.number().int().nonnegative().nullish(),
+          reasoningOutputTokens: z.number().int().nonnegative().nullish(),
+          totalTokens: z.number().int().nonnegative().nullish()
+        })
+        .nullish(),
+      cumulativeTokenUsageDetail: z
+        .object({
+          inputTokens: z.number().int().nonnegative().nullish(),
+          cachedInputTokens: z.number().int().nonnegative().nullish(),
+          outputTokens: z.number().int().nonnegative().nullish(),
+          reasoningOutputTokens: z.number().int().nonnegative().nullish(),
+          totalTokens: z.number().int().nonnegative().nullish()
+        })
+        .nullish(),
+      baselineTokenUsageDetail: z
         .object({
           inputTokens: z.number().int().nonnegative().nullish(),
           cachedInputTokens: z.number().int().nonnegative().nullish(),

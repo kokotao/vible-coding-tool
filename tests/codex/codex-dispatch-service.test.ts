@@ -18,10 +18,11 @@ vi.mock("node:child_process", () => ({
 
 describe("codex dispatch service", () => {
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("uses selected project path as cwd when dispatching a fresh session", () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     const mockedSpawn = vi.mocked(spawn);
     const tempProjectDir = mkdtempSync(join(tmpdir(), "codex-dispatch-cwd-"));
     const child = Object.assign(new EventEmitter(), {
@@ -81,6 +82,7 @@ describe("codex dispatch service", () => {
         })
       );
     } finally {
+      platformSpy.mockRestore();
       rmSync(tempProjectDir, { recursive: true, force: true });
     }
   });
@@ -204,9 +206,16 @@ describe("codex dispatch service", () => {
     };
 
     expect(payload.runtimeMeta).toMatchObject({
-      tokenUsage: 130,
+      tokenUsage: 13,
       modelSlug: "gpt-5.4",
       tokenUsageDetail: {
+        inputTokens: 10,
+        cachedInputTokens: 2,
+        outputTokens: 3,
+        reasoningOutputTokens: 1,
+        totalTokens: 13
+      },
+      cumulativeTokenUsageDetail: {
         inputTokens: 100,
         cachedInputTokens: 20,
         outputTokens: 30,
@@ -223,12 +232,349 @@ describe("codex dispatch service", () => {
     });
   });
 
+  it("parses token_count across stdout chunk boundaries", async () => {
+    const handleEvent = vi.fn(async () => ({ accepted: true }));
+    const mockedSpawn = vi.mocked(spawn);
+
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      stdin: {
+        write: vi.fn(),
+        end: vi.fn()
+      },
+      unref: vi.fn()
+    });
+    mockedSpawn.mockReturnValue(child as never);
+
+    const service = new CodexDispatchService(
+      {
+        codexEventService: {
+          handleEvent
+        } as never,
+        auditLogRepository: {
+          create: vi.fn()
+        } as never,
+        toolSessionRepository: {
+          findBySessionId: () => null
+        } as never,
+        codexCliRuntimeService: {
+          prepareDispatchContext: () => ({
+            ready: true,
+            codexBin: "codex",
+            env: {},
+            extraArgs: [],
+            authorization: {
+              trustedInConfig: true,
+              trustUpdated: false,
+              warning: null
+            }
+          })
+        } as never
+      },
+      {
+        enabled: true,
+        codexBin: "codex",
+        skipGitRepoCheck: false
+      }
+    );
+
+    const result = service.dispatchTask({
+      taskId: "task-split-001",
+      sessionId: "session-split-001",
+      prompt: "hello split",
+      actorId: "ou_test",
+      modelSlug: "gpt-5.4-mini"
+    });
+    expect(result.accepted).toBe(true);
+
+    const tokenCountLine = JSON.stringify({
+      type: "token_count",
+      info: {
+        total_token_usage: {
+          input_tokens: 200,
+          cached_input_tokens: 40,
+          output_tokens: 60,
+          reasoning_output_tokens: 10,
+          total_tokens: 260
+        }
+      }
+    });
+    const splitAt = Math.floor(tokenCountLine.length / 2);
+    (child.stdout as EventEmitter).emit("data", Buffer.from(tokenCountLine.slice(0, splitAt)));
+    (child.stdout as EventEmitter).emit("data", Buffer.from(`${tokenCountLine.slice(splitAt)}\n`));
+    child.emit("close", 0);
+
+    await waitFor(() => expect(handleEvent).toHaveBeenCalled());
+    const payload = firstEventPayload(handleEvent);
+    expect(payload.runtimeMeta).toMatchObject({
+      tokenUsage: 260,
+      modelSlug: "gpt-5.4-mini"
+    });
+  });
+
+  it("keeps token usage when token_count scrolls out of tail output", async () => {
+    const handleEvent = vi.fn(async () => ({ accepted: true }));
+    const mockedSpawn = vi.mocked(spawn);
+
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      stdin: {
+        write: vi.fn(),
+        end: vi.fn()
+      },
+      unref: vi.fn()
+    });
+    mockedSpawn.mockReturnValue(child as never);
+
+    const service = new CodexDispatchService(
+      {
+        codexEventService: {
+          handleEvent
+        } as never,
+        auditLogRepository: {
+          create: vi.fn()
+        } as never,
+        toolSessionRepository: {
+          findBySessionId: () => null
+        } as never,
+        codexCliRuntimeService: {
+          prepareDispatchContext: () => ({
+            ready: true,
+            codexBin: "codex",
+            env: {},
+            extraArgs: [],
+            authorization: {
+              trustedInConfig: true,
+              trustUpdated: false,
+              warning: null
+            }
+          })
+        } as never
+      },
+      {
+        enabled: true,
+        codexBin: "codex",
+        skipGitRepoCheck: false
+      }
+    );
+
+    const result = service.dispatchTask({
+      taskId: "task-tail-001",
+      sessionId: "session-tail-001",
+      prompt: "hello tail",
+      actorId: "ou_test",
+      modelSlug: "gpt-5.4-mini"
+    });
+    expect(result.accepted).toBe(true);
+
+    const tokenCountLine = JSON.stringify({
+      type: "token_count",
+      info: {
+        total_token_usage: {
+          input_tokens: 11,
+          cached_input_tokens: 2,
+          output_tokens: 3,
+          reasoning_output_tokens: 1,
+          total_tokens: 14
+        }
+      }
+    });
+    (child.stdout as EventEmitter).emit("data", Buffer.from(`${tokenCountLine}\n`));
+    (child.stdout as EventEmitter).emit("data", Buffer.from("x".repeat(40_000)));
+    child.emit("close", 0);
+
+    await waitFor(() => expect(handleEvent).toHaveBeenCalled());
+    const payload = firstEventPayload(handleEvent);
+    expect(payload.runtimeMeta).toMatchObject({
+      tokenUsage: 14,
+      modelSlug: "gpt-5.4-mini"
+    });
+  });
+
+  it("parses token_count wrapped in event_msg payload", async () => {
+    const handleEvent = vi.fn(async () => ({ accepted: true }));
+    const mockedSpawn = vi.mocked(spawn);
+
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      stdin: {
+        write: vi.fn(),
+        end: vi.fn()
+      },
+      unref: vi.fn()
+    });
+    mockedSpawn.mockReturnValue(child as never);
+
+    const service = new CodexDispatchService(
+      {
+        codexEventService: {
+          handleEvent
+        } as never,
+        auditLogRepository: {
+          create: vi.fn()
+        } as never,
+        toolSessionRepository: {
+          findBySessionId: () => null
+        } as never,
+        codexCliRuntimeService: {
+          prepareDispatchContext: () => ({
+            ready: true,
+            codexBin: "codex",
+            env: {},
+            extraArgs: [],
+            authorization: {
+              trustedInConfig: true,
+              trustUpdated: false,
+              warning: null
+            }
+          })
+        } as never
+      },
+      {
+        enabled: true,
+        codexBin: "codex",
+        skipGitRepoCheck: false
+      }
+    );
+
+    const result = service.dispatchTask({
+      taskId: "task-event-msg-001",
+      sessionId: "session-event-msg-001",
+      prompt: "hello wrapped token",
+      actorId: "ou_test",
+      modelSlug: "gpt-5.3-codex"
+    });
+    expect(result.accepted).toBe(true);
+
+    const wrappedTokenLine = JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            input_tokens: 33,
+            cached_input_tokens: 4,
+            output_tokens: 7,
+            reasoning_output_tokens: 2,
+            total_tokens: 40
+          }
+        }
+      }
+    });
+    (child.stdout as EventEmitter).emit("data", Buffer.from(`${wrappedTokenLine}\n`));
+    child.emit("close", 0);
+
+    await waitFor(() => expect(handleEvent).toHaveBeenCalled());
+    const payload = firstEventPayload(handleEvent);
+    expect(payload.runtimeMeta).toMatchObject({
+      tokenUsage: 40,
+      modelSlug: "gpt-5.3-codex"
+    });
+  });
+
+  it("parses usage from turn.completed output", async () => {
+    const handleEvent = vi.fn(async () => ({ accepted: true }));
+    const mockedSpawn = vi.mocked(spawn);
+
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      stdin: {
+        write: vi.fn(),
+        end: vi.fn()
+      },
+      unref: vi.fn()
+    });
+    mockedSpawn.mockReturnValue(child as never);
+
+    const service = new CodexDispatchService(
+      {
+        codexEventService: {
+          handleEvent
+        } as never,
+        auditLogRepository: {
+          create: vi.fn()
+        } as never,
+        toolSessionRepository: {
+          findBySessionId: () => null
+        } as never,
+        codexCliRuntimeService: {
+          prepareDispatchContext: () => ({
+            ready: true,
+            codexBin: "codex",
+            env: {},
+            extraArgs: [],
+            authorization: {
+              trustedInConfig: true,
+              trustUpdated: false,
+              warning: null
+            }
+          })
+        } as never
+      },
+      {
+        enabled: true,
+        codexBin: "codex",
+        skipGitRepoCheck: false
+      }
+    );
+
+    const result = service.dispatchTask({
+      taskId: "task-turn-completed-001",
+      sessionId: "session-turn-completed-001",
+      prompt: "hello turn completed",
+      actorId: "ou_test",
+      modelSlug: "gpt-5.3-codex"
+    });
+    expect(result.accepted).toBe(true);
+
+    const turnCompletedLine = JSON.stringify({
+      type: "turn.completed",
+      usage: {
+        input_tokens: 10357,
+        cached_input_tokens: 8576,
+        output_tokens: 17,
+        reasoning_output_tokens: 0
+      }
+    });
+    (child.stdout as EventEmitter).emit("data", Buffer.from(`${turnCompletedLine}\n`));
+    child.emit("close", 0);
+
+    await waitFor(() => expect(handleEvent).toHaveBeenCalled());
+    const payload = firstEventPayload(handleEvent);
+    expect(payload.runtimeMeta).toMatchObject({
+      tokenUsage: 10374,
+      modelSlug: "gpt-5.3-codex",
+      tokenUsageDetail: {
+        inputTokens: 10357,
+        cachedInputTokens: 8576,
+        outputTokens: 17,
+        reasoningOutputTokens: 0,
+        totalTokens: 10374
+      },
+      lastTokenUsageDetail: {
+        inputTokens: 10357,
+        cachedInputTokens: 8576,
+        outputTokens: 17,
+        reasoningOutputTokens: 0,
+        totalTokens: 10374
+      }
+    });
+  });
+
   it("wraps codex spawn with cmd.exe on windows when resolved command is cmd shim", () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const mockedSpawn = vi.mocked(spawn);
     const child = Object.assign(new EventEmitter(), {
       stdout: new EventEmitter(),
       stderr: new EventEmitter(),
+      stdin: {
+        write: vi.fn(),
+        end: vi.fn()
+      },
       unref: vi.fn()
     });
     mockedSpawn.mockReturnValue(child as never);
@@ -276,17 +622,109 @@ describe("codex dispatch service", () => {
       expect(result.accepted).toBe(true);
       expect(mockedSpawn).toHaveBeenCalledWith(
         "cmd.exe",
-        expect.arrayContaining(["/d", "/s", "/c"]),
+        expect.arrayContaining(["/d", "/c"]),
         expect.objectContaining({
-          detached: true,
+          detached: false,
           windowsHide: true
         })
       );
       const spawnArgs = mockedSpawn.mock.calls[0]?.[1] as string[];
-      expect(spawnArgs[3]).toContain('"C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd"');
-      expect(spawnArgs[3]).toContain('"exec"');
+      expect(spawnArgs[2]).toContain('"C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd"');
+      expect(spawnArgs[2]).toContain("exec");
+      expect(spawnArgs[2]).toContain(" -");
+      expect(child.unref).not.toHaveBeenCalled();
+      expect(child.stdin.write).toHaveBeenCalledWith("windows probe\n");
+      expect(child.stdin.end).toHaveBeenCalled();
     } finally {
       platformSpy.mockRestore();
+    }
+  });
+
+  it("resolves ~ path from USERPROFILE when HOME is empty", () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    const mockedSpawn = vi.mocked(spawn);
+    const tempHomeDir = mkdtempSync(join(tmpdir(), "codex-dispatch-home-"));
+    const actualProjectDir = mkdtempSync(join(tempHomeDir, "demo-project-"));
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = "";
+    process.env.USERPROFILE = tempHomeDir;
+
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      stdin: {
+        write: vi.fn(),
+        end: vi.fn()
+      },
+      unref: vi.fn()
+    });
+    mockedSpawn.mockReturnValue(child as never);
+
+    try {
+      const service = new CodexDispatchService(
+        {
+          codexEventService: {
+            handleEvent: vi.fn(async () => ({ accepted: true }))
+          } as never,
+          auditLogRepository: {
+            create: vi.fn()
+          } as never,
+          toolSessionRepository: {
+            findBySessionId: () => null
+          } as never,
+          codexCliRuntimeService: {
+            prepareDispatchContext: () => ({
+              ready: true,
+              codexBin: "codex",
+              env: {},
+              extraArgs: [],
+              authorization: {
+                trustedInConfig: true,
+                trustUpdated: false,
+                warning: null
+              }
+            })
+          } as never
+        },
+        {
+          enabled: true,
+          codexBin: "codex",
+          skipGitRepoCheck: false
+        }
+      );
+
+      const tildePath = `~\\${actualProjectDir.slice(tempHomeDir.length + 1)}`;
+      const result = service.dispatchTask({
+        taskId: "task-home-001",
+        sessionId: "session-home-001",
+        prompt: "home probe",
+        actorId: "ou_test",
+        projectPath: tildePath
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(mockedSpawn).toHaveBeenCalledWith(
+        "codex",
+        expect.any(Array),
+        expect.objectContaining({
+          cwd: actualProjectDir
+        })
+      );
+    } finally {
+      platformSpy.mockRestore();
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+      if (originalUserProfile === undefined) {
+        delete process.env.USERPROFILE;
+      } else {
+        process.env.USERPROFILE = originalUserProfile;
+      }
+      rmSync(tempHomeDir, { recursive: true, force: true });
     }
   });
 });
@@ -304,4 +742,31 @@ async function waitFor(assertion: () => void, timeoutMs = 1000) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
+}
+
+function firstEventPayload(handleEvent: ReturnType<typeof vi.fn>) {
+  const calls = handleEvent.mock.calls as unknown as Array<[unknown]>;
+  const firstCall = calls[0];
+  expect(firstCall).toBeDefined();
+  return firstCall![0] as {
+    runtimeMeta?: {
+      durationMs?: number | null;
+      tokenUsage?: number | null;
+      modelSlug?: string | null;
+      tokenUsageDetail?: {
+        inputTokens?: number | null;
+        cachedInputTokens?: number | null;
+        outputTokens?: number | null;
+        reasoningOutputTokens?: number | null;
+        totalTokens?: number | null;
+      } | null;
+      lastTokenUsageDetail?: {
+        inputTokens?: number | null;
+        cachedInputTokens?: number | null;
+        outputTokens?: number | null;
+        reasoningOutputTokens?: number | null;
+        totalTokens?: number | null;
+      } | null;
+    } | null;
+  };
 }

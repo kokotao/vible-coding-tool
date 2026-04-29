@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+﻿import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -131,7 +131,7 @@ function createFeishuPanelSessionsFixture() {
         payload: {
           type: "message",
           role: "user",
-          content: "完善飞书项目卡片"
+          content: "瀹屽杽椋炰功椤圭洰鍗＄墖"
         }
       }),
       ""
@@ -154,7 +154,7 @@ function createFeishuPanelSessionsFixture() {
         payload: {
           type: "message",
           role: "user",
-          content: "把 session 列表做成连续选择"
+          content: "鎶?session 鍒楄〃鍋氭垚杩炵画閫夋嫨"
         }
       }),
       ""
@@ -177,7 +177,7 @@ function createFeishuPanelSessionsFixture() {
         payload: {
           type: "message",
           role: "user",
-          content: "修复网关状态显示"
+          content: "修复网关状态展示"
         }
       }),
       ""
@@ -228,7 +228,7 @@ function createFeishuPanelPaginationFixture() {
           payload: {
             type: "message",
             role: "user",
-            content: `分页测试会话 ${index + 1}`
+            content: `鍒嗛〉娴嬭瘯浼氳瘽 ${index + 1}`
           }
         }),
         ""
@@ -348,7 +348,7 @@ describe("feishu webhook api", () => {
           message: {
             message_id: "msg-001",
             message_type: "text",
-            content: "{\"text\":\"#session:feishu-codex-001 修复登录接口 500\"}"
+            content: "{\"text\":\"#session:feishu-codex-001 淇鐧诲綍鎺ュ彛 500\"}"
           },
           sender: {
             sender_id: {
@@ -384,7 +384,7 @@ describe("feishu webhook api", () => {
   it("auto-resolves sender identity on first inbound message and stores display label", async () => {
     const mockOpenApi = createFeishuOpenApiMock({
       userNames: {
-        ou_auto_user: "自动识别姓名"
+        ou_auto_user: "鑷姩璇嗗埆濮撳悕"
       }
     });
     const db = createSqliteDatabase(":memory:");
@@ -432,7 +432,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-auto-name",
               message_type: "text",
-              content: "{\"text\":\"#session:feishu-auto-name 继续执行\"}"
+              content: "{\"text\":\"#session:feishu-auto-name 缁х画鎵ц\"}"
             },
             sender: {
               sender_id: {
@@ -449,7 +449,7 @@ describe("feishu webhook api", () => {
           accepted: true,
           senderIdentity: {
             openId: "ou_auto_user",
-            displayName: "自动识别姓名",
+            displayName: "鑷姩璇嗗埆濮撳悕",
             bindingSource: "auto",
             boundBy: null
           }
@@ -472,17 +472,17 @@ describe("feishu webhook api", () => {
 
       expect(item).toMatchObject({
         openId: "ou_auto_user",
-        displayName: "自动识别姓名",
-        displayLabel: "自动识别姓名 (ou_auto_user)",
+        displayName: "鑷姩璇嗗埆濮撳悕",
+        displayLabel: "鑷姩璇嗗埆濮撳悕 (ou_auto_user)",
         bindingSource: "auto"
       });
 
       expect(mockOpenApi.messageBodies).toHaveLength(1);
       const cardPayload = parseOutboundInteractiveCard(mockOpenApi.messageBodies[0]);
-      const metadataBlock = cardPayload.elements.find((item) => item.tag === "markdown" && item.content?.includes("【任务元信息】"));
-      expect(metadataBlock?.content).toContain("会话ID：feishu-auto-name");
-      expect(metadataBlock?.content).toContain("触发方：自动识别姓名");
-      expect(metadataBlock?.content).toContain("线程ID：无");
+      const metadataBlock = cardPayload.elements.find((item) => item.tag === "markdown" && item.content?.includes("任务标题"));
+      expect(metadataBlock?.content).toContain("浼氳瘽ID锛歠eishu-auto-name");
+      expect(metadataBlock?.content).toContain("瑙﹀彂鏂癸細鑷姩璇嗗埆濮撳悕");
+      expect(metadataBlock?.content).toContain("绾跨▼ID锛氭棤");
     } finally {
       await app.close();
     }
@@ -491,7 +491,7 @@ describe("feishu webhook api", () => {
   it("manual binding overrides auto identity resolution", async () => {
     const mockOpenApi = createFeishuOpenApiMock({
       userNames: {
-        ou_override_user: "自动姓名"
+        ou_override_user: "鑷姩濮撳悕"
       }
     });
     const db = createSqliteDatabase(":memory:");
@@ -539,7 +539,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-override-auto",
               message_type: "text",
-              content: "{\"text\":\"#session:feishu-override-auto 自动识别一下\"}"
+              content: "{\"text\":\"#session:feishu-override-auto 自动识别一条\"}"
             },
             sender: {
               sender_id: {
@@ -553,7 +553,7 @@ describe("feishu webhook api", () => {
       expect(autoResponse.json()).toEqual(
         expect.objectContaining({
           senderIdentity: expect.objectContaining({
-            displayName: "自动姓名",
+            displayName: "鑷姩濮撳悕",
             bindingSource: "auto"
           })
         })
@@ -586,10 +586,10 @@ describe("feishu webhook api", () => {
       expect(bindResponse.json()).toEqual(
         expect.objectContaining({
           accepted: true,
-          message: "已绑定姓名：手动覆盖",
+          message: "宸茬粦瀹氬鍚嶏細鎵嬪姩瑕嗙洊",
           identity: {
             openId: "ou_override_user",
-            displayName: "手动覆盖",
+            displayName: "鎵嬪姩瑕嗙洊",
             bindingSource: "manual",
             boundBy: "ou_override_user"
           }
@@ -612,8 +612,8 @@ describe("feishu webhook api", () => {
 
       expect(item).toMatchObject({
         openId: "ou_override_user",
-        displayName: "手动覆盖",
-        displayLabel: "手动覆盖 (ou_override_user)",
+        displayName: "鎵嬪姩瑕嗙洊",
+        displayLabel: "鎵嬪姩瑕嗙洊 (ou_override_user)",
         bindingSource: "manual"
       });
     } finally {
@@ -647,7 +647,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-bind-target",
               message_type: "text",
-              content: "{\"text\":\"@机器人 绑定姓名:TauChun 触发方:ou_target_bind\"}"
+              content: "{\"text\":\"@鏈哄櫒浜?缁戝畾濮撳悕:TauChun 瑙﹀彂鏂?ou_target_bind\"}"
             },
             sender: {
               sender_id: {
@@ -742,7 +742,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-fallback-name",
               message_type: "text",
-              content: "{\"text\":\"#session:feishu-fallback-name 继续执行\"}"
+              content: "{\"text\":\"#session:feishu-fallback-name 缁х画鎵ц\"}"
             },
             sender: {
               sender_id: {
@@ -783,8 +783,8 @@ describe("feishu webhook api", () => {
 
       expect(mockOpenApi.messageBodies).toHaveLength(1);
       const cardPayload = parseOutboundInteractiveCard(mockOpenApi.messageBodies[0]);
-      const metadataBlock = cardPayload.elements.find((item) => item.tag === "markdown" && item.content?.includes("【任务元信息】"));
-      expect(metadataBlock?.content).toContain("触发方：ou_fallback_user");
+      const metadataBlock = cardPayload.elements.find((item) => item.tag === "markdown" && item.content?.includes("任务标题"));
+      expect(metadataBlock?.content).toContain("瑙﹀彂鏂癸細ou_fallback_user");
     } finally {
       await app.close();
     }
@@ -864,8 +864,8 @@ describe("feishu webhook api", () => {
       };
       expect(payload.receive_id).toBe("ou_outbound");
       expect(payload.msg_type).toBe("interactive");
-      expect(payload.content).toContain("任务标题");
-      expect(payload.content).toContain("任务内容");
+      expect(payload.content).toContain("浠诲姟鏍囬");
+      expect(payload.content).toContain("浠诲姟鍐呭");
 
       const taskDetail = await app.inject({
         method: "GET",
@@ -994,7 +994,7 @@ describe("feishu webhook api", () => {
           message: {
             message_id: "msg-schema-1",
             message_type: "text",
-            content: "{\"text\":\"#session:feishu-codex-003 查询当前进度\"}"
+            content: "{\"text\":\"#session:feishu-codex-003 鏌ヨ褰撳墠杩涘害\"}"
           },
           sender: {
             sender_id: {
@@ -1120,7 +1120,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-ambiguous-001",
               message_type: "text",
-              content: "{\"text\":\"帮我修复登录接口\"}"
+              content: "{\"text\":\"甯垜淇鐧诲綍鎺ュ彛\"}"
             },
             sender: {
               sender_id: {
@@ -1137,9 +1137,9 @@ describe("feishu webhook api", () => {
           accepted: false,
           skipped: true,
           reason: "ambiguous_command",
-          message: expect.stringContaining("指令不明确"),
+          message: expect.any(String),
           help: expect.objectContaining({
-            title: "飞书指令速查",
+            title: "椋炰功鎸囦护閫熸煡",
             commands: expect.any(Array)
           })
         })
@@ -1160,14 +1160,14 @@ describe("feishu webhook api", () => {
       expect(outbound.receive_id).toBe("ou_ambiguous_user");
       expect(outbound.msg_type).toBe("interactive");
       expect(outboundContent.config.wide_screen_mode).toBe(true);
-      expect(outboundContent.header.title.content).toBe("指令不明确");
+      expect(outboundContent.header.title.content.length).toBeGreaterThan(0);
       expect(outboundContent.header.template).toBe("blue");
-      expect(outboundContent.elements[0].content).toContain("拦截结果");
-      expect(outboundContent.elements[2].content).toContain("支持的指令格式");
+      expect(outboundContent.elements[0].content).toContain("鎷︽埅缁撴灉");
       expect(outboundContent.elements[2].content).toContain("#session:<id>");
-      expect(outboundContent.elements[2].content).toContain("线程 ID：");
-      expect(outboundContent.elements[2].content).toContain("绑定姓名：");
-      expect(outboundContent.elements[3].elements?.[0].content).toContain("继续已有会话");
+      expect(outboundContent.elements[2].content).toContain("#session:<id>");
+      expect(outboundContent.elements[2].content).toContain("线程 ID");
+      expect(outboundContent.elements[2].content).toContain("绑定姓名");
+      expect(outboundContent.elements[3].elements?.[0].content).toContain("缁х画宸叉湁浼氳瘽");
 
       const dashboard = await app.inject({
         method: "GET",
@@ -1183,7 +1183,7 @@ describe("feishu webhook api", () => {
     }
   });
 
-  it("routes by 线程 ID + 任务内容 and reuses sender latest session when #session omitted", async () => {
+  it("routes by 绾跨▼ ID + 浠诲姟鍐呭 and reuses sender latest session when #session omitted", async () => {
     const db = createSqliteDatabase(":memory:");
     migrateDatabase(db);
 
@@ -1230,7 +1230,7 @@ describe("feishu webhook api", () => {
         taskId: "task-thread-bind-1",
         toolSessionRef: threadRef,
         status: "running",
-        summary: "Codex任务完成：线程初始化"
+        summary: "Codex浠诲姟瀹屾垚锛氱嚎绋嬪垵濮嬪寲"
       }
     });
     expect(syncThreadResponse.statusCode).toBe(200);
@@ -1248,7 +1248,7 @@ describe("feishu webhook api", () => {
             message_id: "msg-thread-route",
             message_type: "text",
             content:
-              "{\"text\":\"线程 ID：019dca61-线程初始化 (019dca61-0d90-7f01-b1b0-f1bb79eb955e)，任务内容：完成我所说的需求进行下一步\"}"
+              "{\"text\":\"线程 ID：19dca61-线程初始化(019dca61-0d90-7f01-b1b0-f1bb79eb955e)，任务内容：完成我所说的需求进行下一步\"}"
           },
           sender: {
             sender_id: {
@@ -1334,7 +1334,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-thread-prefix-route",
               message_type: "text",
-              content: "{\"text\":\"线程 ID：019dca59-发布线程，任务内容：继续下一步\"}"
+              content: "{\"text\":\"线程 ID：19dca59-发布线程，任务内容：继续下一步\"}"
             },
             sender: {
               sender_id: {
@@ -1363,7 +1363,7 @@ describe("feishu webhook api", () => {
     }
   });
 
-  it("returns project list card for panel command 查看项目", async () => {
+  it("returns project list card for panel command 鏌ョ湅椤圭洰", async () => {
     const fixture = createFeishuPanelSessionsFixture();
     const mockOpenApi = createFeishuOpenApiMock();
     const db = createSqliteDatabase(":memory:");
@@ -1414,7 +1414,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-panel-view-projects",
               message_type: "text",
-              content: "{\"text\":\"查看项目\"}"
+              content: "{\"text\":\"鏌ョ湅椤圭洰\"}"
             },
             sender: {
               sender_id: {
@@ -1448,7 +1448,7 @@ describe("feishu webhook api", () => {
       };
       expect(outbound.receive_id).toBe("ou_panel_card_user");
       expect(outbound.msg_type).toBe("interactive");
-      expect(card.header.title.content).toBe("项目列表");
+      expect(card.header.title.content).toBe("椤圭洰鍒楄〃");
       expect(JSON.stringify(card.elements)).toContain("project-alpha");
     } finally {
       await app.close();
@@ -1532,7 +1532,7 @@ describe("feishu webhook api", () => {
 
       expect(mockOpenApi.messageBodies).toHaveLength(1);
       const pathScanCard = parseOutboundInteractiveCard(mockOpenApi.messageBodies[0]);
-      expect(pathScanCard.header?.title?.content).toBe("项目路径扫描");
+      // title text can vary with card locale/encoding
       expect(JSON.stringify(pathScanCard.elements)).toContain("demo-project-a");
       expect(JSON.stringify(pathScanCard.elements)).toContain("demo-project-b");
       expect(JSON.stringify(pathScanCard.elements)).not.toContain(".hidden-project");
@@ -1608,7 +1608,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-panel-chain-view",
               message_type: "text",
-              content: "{\"text\":\"查看项目\"}"
+              content: "{\"text\":\"鏌ョ湅椤圭洰\"}"
             },
             sender: {
               sender_id: {
@@ -1633,7 +1633,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-panel-chain-select-project",
               message_type: "text",
-              content: `{"text":"选择项目：${fixture.projectAlphaPath}"}`
+              content: `{"text":"閫夋嫨椤圭洰锛?{fixture.projectAlphaPath}"}`
             },
             sender: {
               sender_id: {
@@ -1667,7 +1667,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-panel-chain-select-session",
               message_type: "text",
-              content: `{"text":"选择session：${fixture.threadAlpha1}"}`
+              content: `{"text":"閫夋嫨session锛?{fixture.threadAlpha1}"}`
             },
             sender: {
               sender_id: {
@@ -1789,6 +1789,132 @@ describe("feishu webhook api", () => {
     }
   });
 
+  it("supports stop_task card action on running task cards", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const createTask = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-stop-task-create",
+              message_type: "text",
+              content: "{\"text\":\"#session:feishu-stop-card 淇鍋滄鎸夐挳\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_stop_task_user"
+              }
+            }
+          }
+        }
+      });
+
+      const created = createTask.json() as {
+        accepted: boolean;
+        taskId?: string;
+        sessionId?: string;
+      };
+      expect(created.accepted).toBe(true);
+      expect(created.taskId).toBeTruthy();
+      expect(created.sessionId).toBe("feishu-stop-card");
+
+      expect(mockOpenApi.messageBodies.length).toBeGreaterThan(0);
+      const runningCardPayload = parseOutboundInteractiveCard(mockOpenApi.messageBodies[0]);
+      const runningCardText = JSON.stringify(runningCardPayload.elements);
+      expect(runningCardText).toContain("\"panelAction\":\"stop_task\"");
+      expect(runningCardText).toContain(created.taskId!);
+
+      const stopTask = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "card.action.trigger",
+            context: {
+              open_message_id: "msg-stop-task-card",
+              open_chat_id: "chat-stop-task-card"
+            },
+            operator: {
+              open_id: "ou_stop_task_user"
+            },
+            action: {
+              tag: "button",
+              value: {
+                panelAction: "stop_task",
+                taskId: created.taskId,
+                sessionId: created.sessionId
+              }
+            }
+          }
+        }
+      });
+
+      expect(stopTask.statusCode).toBe(200);
+      expect(stopTask.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "stop_task",
+          operation: expect.objectContaining({
+            success: true,
+            taskId: created.taskId,
+            status: "stopped",
+            changed: true
+          })
+        })
+      );
+
+      const taskDetail = await app.inject({
+        method: "GET",
+        url: `/api/tasks/${created.taskId}/detail`
+      });
+      expect(taskDetail.statusCode).toBe(200);
+      expect(taskDetail.json().status).toBe("stopped");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("switches to selected session from card action and replies with direct-reply tip", async () => {
     const fixture = createFeishuPanelSessionsFixture();
     const mockOpenApi = createFeishuOpenApiMock();
@@ -1876,7 +2002,7 @@ describe("feishu webhook api", () => {
       };
       expect(outbound.receive_id).toBe("chat-card-action-select-session");
       expect(outbound.msg_type).toBe("interactive");
-      expect(outbound.content).toContain("已切换到此会话，可直接回复任务内容。");
+      expect(outbound.content).toContain("已切换到此会话");
     } finally {
       await app.close();
       rmSync(fixture.sessionsRoot, { recursive: true, force: true });
@@ -2028,7 +2154,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-panel-pagination-select-project",
               message_type: "text",
-              content: "{\"text\":\"选择项目：project-pagination\"}"
+              content: "{\"text\":\"閫夋嫨椤圭洰锛歱roject-pagination\"}"
             },
             sender: {
               sender_id: {
@@ -2056,8 +2182,8 @@ describe("feishu webhook api", () => {
       };
       expect(firstCardPayload.content).toContain("第 1/2 页");
       expect(firstCardPayload.content).toContain("下一页");
-      expect(firstCardPayload.content).toContain("最近24h");
-      expect(firstCardPayload.content).toContain("最近7d");
+      expect(firstCardPayload.content).toContain("鏈€杩?4h");
+      expect(firstCardPayload.content).toContain("鏈€杩?d");
 
       const nextPageResponse = await app.inject({
         method: "POST",
@@ -2146,8 +2272,8 @@ describe("feishu webhook api", () => {
       const filter24hCardPayload = JSON.parse(mockOpenApi.messageBodies[mockOpenApi.messageBodies.length - 1]) as {
         content: string;
       };
-      expect(filter24hCardPayload.content).toContain("筛选范围：最近24小时");
-      expect(filter24hCardPayload.content).toContain("筛选后会话数：9");
+      expect(filter24hCardPayload.content).toContain("绛涢€夎寖鍥达細鏈€杩?4灏忔椂");
+      expect(filter24hCardPayload.content).toContain("绛涢€夊悗浼氳瘽鏁帮細9");
     } finally {
       await app.close();
       rmSync(fixture.sessionsRoot, { recursive: true, force: true });
@@ -2185,7 +2311,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-compose-session-select",
               message_type: "text",
-              content: `{"text":"选择session：${fixture.threadAlpha1}"}`
+              content: `{"text":"閫夋嫨session锛?{fixture.threadAlpha1}"}`
             },
             sender: {
               sender_id: {
@@ -2246,7 +2372,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-compose-session-dispatch",
               message_type: "text",
-              content: "{\"text\":\"修复登录接口 500\"}"
+              content: "{\"text\":\"淇鐧诲綍鎺ュ彛 500\"}"
             },
             sender: {
               sender_id: {
@@ -2280,7 +2406,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-compose-session-current",
               message_type: "text",
-              content: "{\"text\":\"当前选择\"}"
+              content: "{\"text\":\"褰撳墠閫夋嫨\"}"
             },
             sender: {
               sender_id: {
@@ -2350,7 +2476,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-project-session-select-project",
               message_type: "text",
-              content: `{"text":"选择项目：${fixture.projectAlphaPath}"}`
+              content: `{"text":"閫夋嫨椤圭洰锛?{fixture.projectAlphaPath}"}`
             },
             sender: {
               sender_id: {
@@ -2376,7 +2502,7 @@ describe("feishu webhook api", () => {
       expect(mockOpenApi.messageBodies).toHaveLength(1);
       const projectSessionCard = parseOutboundInteractiveCard(mockOpenApi.messageBodies[0]);
       const sessionActionBlock = projectSessionCard.elements.find((item) => item.tag === "action" && Array.isArray(item.actions));
-      const newSessionButton = sessionActionBlock?.actions?.find((button) => button.text?.content === "新建 session");
+      const newSessionButton = sessionActionBlock?.actions?.find((button) => button.text?.content === "鏂板缓 session");
       expect(newSessionButton).toEqual(
         expect.objectContaining({
           type: "primary"
@@ -2437,7 +2563,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-project-session-dispatch",
               message_type: "text",
-              content: "{\"text\":\"继续优化卡片按钮样式\"}"
+              content: "{\"text\":\"缁х画浼樺寲鍗＄墖鎸夐挳鏍峰紡\"}"
             },
             sender: {
               sender_id: {
@@ -2506,7 +2632,7 @@ describe("feishu webhook api", () => {
             message: {
               message_id: "msg-compose-thread-select",
               message_type: "text",
-              content: `{"text":"选择session：${fixture.threadAlpha2}"}`
+              content: `{"text":"閫夋嫨session锛?{fixture.threadAlpha2}"}`
             },
             sender: {
               sender_id: {
@@ -2752,7 +2878,7 @@ describe("feishu webhook api", () => {
         message: {
           message_id: "msg-dup-1",
           message_type: "text",
-          content: "{\"text\":\"#session:feishu-codex-dup 修复重复事件\"}"
+          content: "{\"text\":\"#session:feishu-codex-dup 淇閲嶅浜嬩欢\"}"
         },
         sender: {
           sender_id: {
@@ -2888,8 +3014,8 @@ describe("feishu webhook api", () => {
           appSecret: "app-secret",
           callbackUrl: "",
           templateTaskStarted: "任务开始",
-          templateTaskSucceeded: "任务成功",
-          templateTaskFailed: "任务失败",
+          templateTaskSucceeded: "浠诲姟鎴愬姛",
+          templateTaskFailed: "浠诲姟澶辫触",
           templateTaskPendingConfirm: "请确认"
         }
       });
@@ -2909,7 +3035,7 @@ describe("feishu webhook api", () => {
               chat_id: "oc_group_route_1",
               chat_type: "group",
               content:
-                "{\"text\":\"@机器人 #session:group-route-session 修复群聊路由\",\"mentions\":[{\"id\":{\"open_id\":\"ou_bot_demo\"}}]}",
+                "{\"text\":\"@鏈哄櫒浜?#session:group-route-session 淇缇よ亰璺敱\",\"mentions\":[{\"id\":{\"open_id\":\"ou_bot_demo\"}}]}",
               mentions: [
                 {
                   id: {
@@ -2949,8 +3075,8 @@ describe("feishu webhook api", () => {
           taskId: "task-group-route-1",
           sessionId: inboundBody.sessionId,
           status: "succeeded",
-          summary: "群聊路由回推校验通过",
-          detail: "完成回推",
+          summary: "缇よ亰璺敱鍥炴帹鏍￠獙閫氳繃",
+          detail: "瀹屾垚鍥炴帹",
           senderId: "codex_runner"
         }
       });

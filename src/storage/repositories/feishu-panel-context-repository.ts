@@ -25,6 +25,7 @@ export type FeishuPanelContextRecord = {
   selectedSessionTitle: string | null;
   selectedModelSlug: string | null;
   selectedModelName: string | null;
+  selectedReasoningLevel: string | null;
   pendingComposeMode: FeishuPanelComposeMode | null;
   lastAction: string | null;
   updatedAt: string;
@@ -39,6 +40,7 @@ type FeishuPanelContextRow = {
   selectedSessionTitle: string | null;
   selectedModelSlug: string | null;
   selectedModelName: string | null;
+  selectedReasoningLevel: string | null;
   pendingComposeMode: FeishuPanelComposeMode | null;
   lastAction: string | null;
   updatedAt: string;
@@ -58,6 +60,7 @@ export class FeishuPanelContextRepository {
         selected_session_title AS selectedSessionTitle,
         selected_model_slug AS selectedModelSlug,
         selected_model_name AS selectedModelName,
+        selected_reasoning_level AS selectedReasoningLevel,
         pending_compose_mode AS pendingComposeMode,
         last_action AS lastAction,
         updated_at AS updatedAt
@@ -81,6 +84,7 @@ export class FeishuPanelContextRepository {
         selected_session_title,
         selected_model_slug,
         selected_model_name,
+        selected_reasoning_level,
         pending_compose_mode,
         last_action,
         updated_at
@@ -93,6 +97,7 @@ export class FeishuPanelContextRepository {
         @selectedSessionTitle,
         @selectedModelSlug,
         @selectedModelName,
+        @selectedReasoningLevel,
         @pendingComposeMode,
         @lastAction,
         @updatedAt
@@ -105,6 +110,7 @@ export class FeishuPanelContextRepository {
         selected_session_title = excluded.selected_session_title,
         selected_model_slug = excluded.selected_model_slug,
         selected_model_name = excluded.selected_model_name,
+        selected_reasoning_level = excluded.selected_reasoning_level,
         pending_compose_mode = excluded.pending_compose_mode,
         last_action = excluded.last_action,
         updated_at = excluded.updated_at
@@ -119,6 +125,7 @@ export class FeishuPanelContextRepository {
       selectedSessionTitle: record.selectedSessionTitle?.trim() || null,
       selectedModelSlug: record.selectedModelSlug?.trim() || null,
       selectedModelName: record.selectedModelName?.trim() || null,
+      selectedReasoningLevel: record.selectedReasoningLevel?.trim() || null,
       pendingComposeMode: record.pendingComposeMode || null,
       lastAction: record.lastAction?.trim() || null,
       updatedAt: record.updatedAt
@@ -153,6 +160,7 @@ export class FeishuPanelContextRepository {
       selectedSessionTitle: null,
       selectedModelSlug: null,
       selectedModelName: null,
+      selectedReasoningLevel: null,
       pendingComposeMode: null,
       lastAction: null,
       updatedAt
@@ -169,6 +177,7 @@ export class FeishuPanelContextRepository {
       selectedSessionTitle: row.selectedSessionTitle,
       selectedModelSlug: row.selectedModelSlug,
       selectedModelName: row.selectedModelName,
+      selectedReasoningLevel: row.selectedReasoningLevel,
       pendingComposeMode: row.pendingComposeMode,
       lastAction: row.lastAction,
       updatedAt: row.updatedAt

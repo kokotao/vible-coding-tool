@@ -5,7 +5,7 @@
  * @date 2026-04-27 23:58
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, extname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { CodexLocalSessionService } from "./codex-local-session-service";
@@ -121,6 +121,7 @@ export type CodexDispatchRuntimeContext = {
 export class CodexCliRuntimeService {
   private readonly codexBin: string;
   private readonly projectRoot: string;
+  private readonly codexHomePath: string;
   private readonly persistedConfigPath: string;
   private readonly codexConfigPath: string;
   private readonly installCommand: string[];
@@ -155,6 +156,7 @@ export class CodexCliRuntimeService {
   constructor(options: {
     codexBin: string;
     projectRoot: string;
+    codexHomePath?: string;
     persistedConfigPath?: string;
     codexConfigPath?: string;
     installCommand?: string[];
@@ -162,8 +164,9 @@ export class CodexCliRuntimeService {
   }) {
     this.codexBin = options.codexBin;
     this.projectRoot = resolve(options.projectRoot);
+    this.codexHomePath = this.resolveWritableCodexHomePath(options.codexHomePath);
     this.persistedConfigPath = resolve(options.persistedConfigPath || resolve(this.projectRoot, "data", "codex-runtime-config.json"));
-    this.codexConfigPath = resolve(options.codexConfigPath || resolve(homedir(), ".codex", "config.toml"));
+    this.codexConfigPath = resolve(options.codexConfigPath || resolve(this.codexHomePath, "config.toml"));
     this.installCommand = options.installCommand?.length
       ? options.installCommand
       : ["npm", "install", "-g", "@openai/codex"];
@@ -576,6 +579,7 @@ export class CodexCliRuntimeService {
     try {
       const output = execFileSync("cmd.exe", ["/d", "/s", "/c", "codex --version"], {
         encoding: "utf8",
+        env: this.buildCodexProcessEnv(process.env),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true
       }).trim();
@@ -619,6 +623,7 @@ export class CodexCliRuntimeService {
     try {
       const output = execFileSync("cmd.exe", ["/d", "/s", "/c", "where codex"], {
         encoding: "utf8",
+        env: this.buildCodexProcessEnv(process.env),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true
       }).trim();
@@ -670,6 +675,7 @@ export class CodexCliRuntimeService {
     try {
       const output = execFileSync("cmd.exe", ["/d", "/s", "/c", "npm config get prefix"], {
         encoding: "utf8",
+        env: this.buildCodexProcessEnv(process.env),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true
       }).trim();
@@ -693,6 +699,7 @@ export class CodexCliRuntimeService {
           ["/d", "/s", "/c", `${this.quoteWindowsArg(command)} --version`],
           {
             encoding: "utf8",
+            env: this.buildCodexProcessEnv(process.env),
             stdio: ["ignore", "pipe", "pipe"],
             windowsHide: true
           }
@@ -702,6 +709,7 @@ export class CodexCliRuntimeService {
 
       const output = execFileSync(command, ["--version"], {
         encoding: "utf8",
+        env: this.buildCodexProcessEnv(process.env),
         stdio: ["ignore", "pipe", "pipe"]
       }).trim();
       return output.split(/\r?\n/)[0] || null;
@@ -764,6 +772,7 @@ export class CodexCliRuntimeService {
     const env: NodeJS.ProcessEnv = {
       ...baseEnv
     };
+    env.CODEX_HOME = this.codexHomePath;
     const resolvedBin = this.runtimeSnapshot.resolvedCodexBin;
     if (resolvedBin && isAbsolute(resolvedBin)) {
       const binDir = dirname(resolvedBin);
@@ -788,6 +797,13 @@ export class CodexCliRuntimeService {
     }
 
     return env;
+  }
+
+  private buildCodexProcessEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    return {
+      ...baseEnv,
+      CODEX_HOME: this.codexHomePath
+    };
   }
 
   private resolveCodexConfigPath() {
@@ -877,9 +893,9 @@ export class CodexCliRuntimeService {
   private buildSetupQuickCommands() {
     const install = this.installCommand.join(" ");
     if (process.platform === "win32") {
-      return ["codex --version", "where codex", install, "npm config get prefix"];
+      return [`echo $env:CODEX_HOME`, "codex --version", "where codex", install, "npm config get prefix"];
     }
-    return ["codex --version", "which codex", install];
+    return ["echo $CODEX_HOME", "codex --version", "which codex", install];
   }
 
   private async probeApiAvailability(input: { baseUrl: string; apiKey: string }): Promise<ApiProbeResult> {
@@ -899,13 +915,11 @@ export class CodexCliRuntimeService {
     }
 
     const token = "CODEX_MODEL_PROBE_OK";
-    const prompt = `请仅输出 ${token}，不要输出其他字符。`;
-    const args = ["exec", "--ephemeral", "--skip-git-repo-check", prompt];
+    const prompt = `Reply with exactly ${token}. No other text.`;
+    const args = ["exec", "--ephemeral", "--skip-git-repo-check", "-"];
     const spawnInvocation = this.resolveCodexSpawnInvocation(codexCommand, args);
     const target = `${codexCommand} ${args.join(" ")}`;
-    const probeEnv: NodeJS.ProcessEnv = {
-      ...process.env
-    };
+    const probeEnv = this.buildDispatchEnv(process.env);
     if (baseUrl) {
       probeEnv.OPENAI_BASE_URL = baseUrl;
       probeEnv.OPENAI_API_BASE_URL = baseUrl;
@@ -918,9 +932,10 @@ export class CodexCliRuntimeService {
       const child = spawn(spawnInvocation.command, spawnInvocation.args, {
         cwd: this.projectRoot,
         env: probeEnv,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         windowsHide: process.platform === "win32"
       });
+      this.writePromptToStdin(child.stdin, prompt);
 
       let stdout = "";
       let stderr = "";
@@ -996,6 +1011,39 @@ export class CodexCliRuntimeService {
     };
   }
 
+  private resolveWritableCodexHomePath(overridePath?: string) {
+    const requested = (overridePath || process.env.CODEX_HOME || "").trim();
+    if (requested) {
+      const resolvedRequested = resolve(requested);
+      if (this.ensureDirectoryWritable(resolvedRequested)) {
+        return resolvedRequested;
+      }
+    }
+
+    const homeCandidate = resolve(homedir(), ".codex");
+    if (this.ensureDirectoryWritable(homeCandidate)) {
+      return homeCandidate;
+    }
+
+    const fallback = resolve(this.projectRoot, "data", "codex-home");
+    this.ensureDirectoryWritable(fallback);
+    return fallback;
+  }
+
+  private ensureDirectoryWritable(path: string) {
+    try {
+      mkdirSync(path, {
+        recursive: true
+      });
+      const probePath = resolve(path, ".write-probe.tmp");
+      writeFileSync(probePath, "ok", "utf8");
+      rmSync(probePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private resolveCodexSpawnInvocation(commandBin: string, commandArgs: string[]): SpawnInvocation {
     if (process.platform !== "win32") {
       return {
@@ -1016,11 +1064,50 @@ export class CodexCliRuntimeService {
     const cmdline = this.buildWindowsCmdline(commandBin, commandArgs);
     return {
       command: "cmd.exe",
-      args: ["/d", "/s", "/c", cmdline]
+      args: ["/d", "/c", cmdline]
     };
   }
 
   private buildWindowsCmdline(commandBin: string, commandArgs: string[]) {
-    return [this.quoteWindowsArg(commandBin), ...commandArgs.map((arg) => this.quoteWindowsArg(arg))].join(" ");
+    const commandToken = this.isBareWindowsCommand(commandBin) ? commandBin : this.quoteWindowsArg(commandBin);
+    return [commandToken, ...commandArgs.map((arg) => this.toWindowsCmdArg(arg))].join(" ");
+  }
+
+  private isBareWindowsCommand(value: string) {
+    return /^[A-Za-z0-9_.-]+$/.test(value);
+  }
+
+  private toWindowsCmdArg(value: string) {
+    if (!this.needsWindowsQuote(value)) {
+      return value;
+    }
+    return this.quoteWindowsArg(value);
+  }
+
+  private needsWindowsQuote(value: string) {
+    return /[\s"&|<>^()%!]/.test(value);
+  }
+
+  private writePromptToStdin(
+    stdin: {
+      write: (chunk: string) => void;
+      end: () => void;
+    } | null
+      | undefined,
+    prompt: string
+  ) {
+    if (!stdin) {
+      return;
+    }
+    try {
+      stdin.write(prompt.endsWith("\n") ? prompt : `${prompt}\n`);
+      stdin.end();
+    } catch {
+      try {
+        stdin.end();
+      } catch {
+        // ignore stdin cleanup failures
+      }
+    }
   }
 }

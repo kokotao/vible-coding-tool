@@ -145,6 +145,13 @@ describe("codex events api", () => {
               reasoningOutputTokens: 76,
               totalTokens: 4876
             },
+            cumulativeTokenUsageDetail: {
+              inputTokens: 4000,
+              cachedInputTokens: 500,
+              outputTokens: 300,
+              reasoningOutputTokens: 76,
+              totalTokens: 4876
+            },
             lastTokenUsageDetail: {
               inputTokens: 900,
               cachedInputTokens: 120,
@@ -233,7 +240,7 @@ describe("codex events api", () => {
       expect(outboundPayload.content).toContain("reasoning_output 76");
       expect(outboundPayload.content).not.toContain("任务标题：");
       expect(outboundPayload.content).not.toContain("完成内容：");
-      expect((outboundPayload.content.match(/任务状态：/g) || []).length).toBe(1);
+      expect((outboundPayload.content.match(/任务状态：/g) || []).length).toBe(0);
     } finally {
       await app.close();
     }

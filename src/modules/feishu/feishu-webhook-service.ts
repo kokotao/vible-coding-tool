@@ -24,6 +24,7 @@ import { CodexLocalSessionService } from "../codex/codex-local-session-service";
 import { ConnectorConfigService } from "../connectors/connector-config-service";
 import { FeishuIdentityService } from "./feishu-identity-service";
 import { FeishuOutboundNotifier } from "../notifications/feishu-outbound-notifier";
+import { LightOpsService } from "../ops/light-ops-service";
 import { AuditLogRepository } from "../../storage/repositories/audit-log-repository";
 import {
   FeishuSessionRouteRepository,
@@ -52,6 +53,7 @@ type FeishuWebhookServiceDeps = {
   codexDispatchService?: CodexDispatchService;
   feishuNotifier?: FeishuOutboundNotifier;
   codexLocalSessionService?: CodexLocalSessionService;
+  lightOpsService?: LightOpsService;
   terminalEventStream?: TerminalEventStream;
 };
 
@@ -103,7 +105,12 @@ export class FeishuWebhookService {
           platformMessageId: message.messageId
         };
 
-        return this.executeParsedCommand(message, parsed, panelContext.selectedModelSlug ?? null);
+        return this.executeParsedCommand(
+          message,
+          parsed,
+          panelContext.selectedModelSlug ?? null,
+          panelContext.selectedReasoningLevel ?? null
+        );
       }
 
       if (panelContext?.pendingComposeMode === "thread_command") {
@@ -126,7 +133,12 @@ export class FeishuWebhookService {
           platformMessageId: message.messageId
         };
 
-        return this.executeParsedCommand(message, parsed, panelContext.selectedModelSlug ?? null);
+        return this.executeParsedCommand(
+          message,
+          parsed,
+          panelContext.selectedModelSlug ?? null,
+          panelContext.selectedReasoningLevel ?? null
+        );
       }
 
       if (panelContext?.pendingComposeMode === "project_session_command") {
@@ -153,6 +165,7 @@ export class FeishuWebhookService {
           message,
           parsed,
           panelContext.selectedModelSlug ?? null,
+          panelContext.selectedReasoningLevel ?? null,
           panelContext.selectedProjectPath ?? null
         );
       }
@@ -169,7 +182,12 @@ export class FeishuWebhookService {
           platformMessageId: message.messageId
         };
 
-        return this.executeParsedCommand(message, parsed, panelContext.selectedModelSlug ?? null);
+        return this.executeParsedCommand(
+          message,
+          parsed,
+          panelContext.selectedModelSlug ?? null,
+          panelContext.selectedReasoningLevel ?? null
+        );
       }
 
       return this.handleCommandGuidance(message, "ambiguous_command");
@@ -191,7 +209,12 @@ export class FeishuWebhookService {
     }
 
     const panelContext = this.deps.feishuCommandPanelService?.resolveDispatchContext(message.senderId);
-    return this.executeParsedCommand(message, parsed, panelContext?.selectedModelSlug ?? null);
+    return this.executeParsedCommand(
+      message,
+      parsed,
+      panelContext?.selectedModelSlug ?? null,
+      panelContext?.selectedReasoningLevel ?? null
+    );
   }
 
   async handleCardAction(message: {
@@ -382,7 +405,46 @@ export class FeishuWebhookService {
         platformMessageId: message.messageId
       };
 
-      return this.executeParsedCommand(message, parsed, context.selectedModelSlug ?? null);
+      return this.executeParsedCommand(
+        message,
+        parsed,
+        context.selectedModelSlug ?? null,
+        context.selectedReasoningLevel ?? null
+      );
+    }
+
+    if (command.actionType === "stop_task") {
+      if (!this.deps.lightOpsService) {
+        return {
+          accepted: false,
+          command: command.actionType,
+          reason: "stop_service_disabled"
+        };
+      }
+
+      const taskId = command.taskId.trim();
+      if (!taskId) {
+        return this.handleCommandGuidance(message, "ambiguous_command");
+      }
+
+      const operation = await this.deps.lightOpsService.stopTask(taskId, {
+        actorId: message.senderId,
+        sourcePlatform: "feishu"
+      });
+      const resolvedStopMessage =
+        (operation as { stoppedMessage?: string | null }).stoppedMessage ||
+        (operation as { stopControl?: { stopMessage?: string | null } }).stopControl?.stopMessage ||
+        this.resolveLatestAssistantMessage(command.threadRef || command.sessionId || "") ||
+        null;
+
+      return {
+        accepted: true,
+        command: command.actionType,
+        operation: {
+          ...operation,
+          stopMessage: resolvedStopMessage
+        }
+      };
     }
 
     const result = await panelService.handlePanelCommand(message.senderId, command, refresh);
@@ -447,6 +509,7 @@ export class FeishuWebhookService {
     message: FeishuIncomingMessage,
     parsed: ParsedCommand,
     selectedModelSlug: string | null,
+    selectedReasoningLevel: string | null = null,
     selectedProjectPath: string | null = null
   ) {
     if (!parsed.prompt.trim()) {
@@ -608,6 +671,7 @@ export class FeishuWebhookService {
             actorId: parsed.senderId,
             threadRef,
             modelSlug: selectedModelSlug,
+            modelReasoningLevel: selectedReasoningLevel,
             projectPath: parsed.newSession ? selectedProjectPath : null
           });
 
@@ -809,6 +873,7 @@ export class FeishuWebhookService {
     actorId: string;
     threadRef?: string | null;
     modelSlug?: string | null;
+    modelReasoningLevel?: string | null;
     projectPath?: string | null;
   }) {
     if (!this.deps.codexDispatchService) {
@@ -828,6 +893,7 @@ export class FeishuWebhookService {
       actorId: input.actorId,
       threadRef: input.threadRef ?? null,
       modelSlug: input.modelSlug ?? null,
+      modelReasoningLevel: input.modelReasoningLevel ?? null,
       projectPath: input.projectPath ?? null
     });
     return {
@@ -978,6 +1044,31 @@ export class FeishuWebhookService {
     }
 
     return "ambiguous_command";
+  }
+
+  private resolveLatestAssistantMessage(threadSelector: string) {
+    const selector = (threadSelector || "").trim();
+    if (!selector || !this.deps.codexLocalSessionService) {
+      return null;
+    }
+
+    const resolved = this.deps.codexLocalSessionService.resolveThreadSelector(selector);
+    if (resolved.status !== "resolved") {
+      return null;
+    }
+
+    try {
+      const detail = this.deps.codexLocalSessionService.getSessionDetail({
+        threadId: resolved.threadId,
+        refresh: true
+      });
+      const latestAssistant = [...detail.messages]
+        .reverse()
+        .find((message) => message.kind === "message" && message.role === "assistant" && (message.content || "").trim());
+      return latestAssistant?.content?.trim() || null;
+    } catch {
+      return null;
+    }
   }
 
   private isOpenId(value: string) {

@@ -242,6 +242,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       feishuIdentityService,
       feishuCommandPanelService,
       codexLocalSessionService: codexLocalSessionService ?? undefined,
+      lightOpsService,
       terminalEventStream: options.terminalEventStream
     }),
     feishuDirectoryService,

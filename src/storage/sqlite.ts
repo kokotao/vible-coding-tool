@@ -44,9 +44,14 @@ function ensureAuditLogTaskIdColumn(db: SqliteDatabase) {
 function ensureFeishuPanelContextColumns(db: SqliteDatabase) {
   const columns = db.prepare("PRAGMA table_info(feishu_panel_contexts)").all() as Array<{ name: string }>;
   const hasPendingComposeMode = columns.some((column) => column.name === "pending_compose_mode");
+  const hasSelectedReasoningLevel = columns.some((column) => column.name === "selected_reasoning_level");
 
   if (!hasPendingComposeMode) {
     db.exec("ALTER TABLE feishu_panel_contexts ADD COLUMN pending_compose_mode TEXT");
+  }
+
+  if (!hasSelectedReasoningLevel) {
+    db.exec("ALTER TABLE feishu_panel_contexts ADD COLUMN selected_reasoning_level TEXT");
   }
 }
 

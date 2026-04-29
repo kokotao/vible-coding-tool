@@ -19,6 +19,7 @@ import {
   type FeishuPanelProjectSummary,
   type FeishuPanelSessionWindow,
   type FeishuPanelSessionSummary,
+  resolveFeishuModelReasoningSelection,
   parseFeishuPanelActionValue,
   parseFeishuPanelCommand
 } from "./feishu-command-panel";
@@ -236,18 +237,29 @@ export class FeishuCommandPanelService {
     };
   }
 
-  async selectModel(openId: string, selector: string, refresh = true): Promise<FeishuCommandPanelSelection> {
+  async selectModel(
+    openId: string,
+    selector: string,
+    reasoningLevel: string | null = null,
+    refresh = true
+  ): Promise<FeishuCommandPanelSelection> {
     const catalog = this.deps.codexModelCatalogService.listModels({ refresh });
     const model = this.resolveModel(catalog.items, selector);
     if (!model) {
       throw new AppError("FEISHU_PANEL_MODEL_NOT_FOUND", 404, `Model not found for selector: ${selector}`);
     }
 
+    const reasoningSelection = resolveFeishuModelReasoningSelection({
+      model,
+      requestedReasoningLevel: reasoningLevel
+    });
+
     const context = this.updateContext(openId, {
       currentView: "selection",
       selectedModelSlug: model.slug,
       selectedModelName: model.displayName,
-      lastAction: `select_model:${model.slug}`
+      selectedReasoningLevel: reasoningSelection.reasoningLevel,
+      lastAction: `select_model:${model.slug}${reasoningSelection.reasoningLevel ? `:${reasoningSelection.reasoningLevel}` : ""}`
     });
 
     return {
@@ -256,7 +268,8 @@ export class FeishuCommandPanelService {
         context,
         project: this.resolveSelectedProject(context),
         session: this.resolveSelectedSession(context),
-        model
+        model,
+        notice: reasoningSelection.notice
       })
     };
   }
@@ -370,7 +383,7 @@ export class FeishuCommandPanelService {
       case "view_models":
         return this.showModels(openId, refresh);
       case "select_model":
-        return this.selectModel(openId, command.selector, refresh);
+        return this.selectModel(openId, command.selector, command.reasoningLevel ?? null, refresh);
       case "view_gateway_status":
         return this.showGatewayStatus(openId, refresh);
       case "current_selection":
@@ -398,6 +411,7 @@ export class FeishuCommandPanelService {
       selectedThreadId: context.selectedThreadId,
       selectedModelSlug: context.selectedModelSlug,
       selectedModelName: context.selectedModelName,
+      selectedReasoningLevel: context.selectedReasoningLevel,
       selectedProjectPath: context.selectedProjectPath,
       selectedProjectName: context.selectedProjectName,
       selectedSessionTitle: context.selectedSessionTitle,
@@ -425,6 +439,7 @@ export class FeishuCommandPanelService {
         selectedSessionTitle: null,
         selectedModelSlug: null,
         selectedModelName: null,
+        selectedReasoningLevel: null,
         pendingComposeMode: null,
         lastAction: null,
         updatedAt: now
@@ -437,6 +452,7 @@ export class FeishuCommandPanelService {
         selectedSessionTitle: null,
         selectedModelSlug: null,
         selectedModelName: null,
+        selectedReasoningLevel: null,
         pendingComposeMode: null,
         lastAction: null,
         updatedAt: now
@@ -676,9 +692,13 @@ export class FeishuCommandPanelService {
       return null;
     }
 
+    const homeDir =
+      process.env.HOME?.trim() ||
+      process.env.USERPROFILE?.trim() ||
+      `${process.env.HOMEDRIVE || ""}${process.env.HOMEPATH || ""}`.trim();
     const expandedHome =
-      normalized.startsWith("~/") && process.env.HOME
-        ? resolve(process.env.HOME, normalized.slice(2))
+      (normalized.startsWith("~/") || normalized.startsWith("~\\")) && homeDir
+        ? resolve(homeDir, normalized.slice(2))
         : normalized;
     const hasPathHint = /[\\/]/.test(expandedHome) || expandedHome.startsWith("~");
     const rawCandidates = [expandedHome];

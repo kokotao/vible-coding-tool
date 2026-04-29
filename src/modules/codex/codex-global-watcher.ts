@@ -8,7 +8,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import {
+  parseCodexTokenCountSnapshotFromEventRecord,
   parseCodexTokenCountSnapshot,
+  resolveCodexTaskTokenUsage,
   type CodexRuntimeMeta,
   type CodexTokenUsageBreakdown
 } from "./codex-runtime-meta";
@@ -30,6 +32,8 @@ type TurnRuntimeState = {
   modelSlug: string | null;
   tokenUsage: number | null;
   tokenUsageDetail: CodexTokenUsageBreakdown | null;
+  baselineTokenUsageDetail: CodexTokenUsageBreakdown | null;
+  cumulativeTokenUsageDetail: CodexTokenUsageBreakdown | null;
   lastTokenUsageDetail: CodexTokenUsageBreakdown | null;
 };
 
@@ -295,6 +299,7 @@ class CodexGlobalWatcher {
     const runtimeByTurnId = new Map<string, TurnRuntimeState>();
     let activeTurnId: string | null = null;
     let latestTokenCount: ReturnType<typeof parseCodexTokenCountSnapshot> | null = null;
+    let latestCompletedTurnTokenUsageDetail = resolveLatestTokenUsageBeforeOffset(content, offset);
     let defaultModelSlug: string | null = null;
     let sessionStartedAt: string | null = null;
 
@@ -343,8 +348,17 @@ class CodexGlobalWatcher {
         latestTokenCount = tokenCount;
         if (activeTurnId) {
           const state = ensureTurnRuntimeState(runtimeByTurnId, activeTurnId);
-          state.tokenUsage = tokenCount.totalUsage?.totalTokens ?? state.tokenUsage;
-          state.tokenUsageDetail = tokenCount.totalUsage ?? state.tokenUsageDetail;
+          if (!state.baselineTokenUsageDetail && tokenCount.totalUsage) {
+            state.baselineTokenUsageDetail = latestCompletedTurnTokenUsageDetail;
+          }
+          const taskTokenUsage = resolveCodexTaskTokenUsage({
+            baselineUsage: state.baselineTokenUsageDetail,
+            totalUsage: tokenCount.totalUsage,
+            lastUsage: tokenCount.lastUsage
+          });
+          state.tokenUsage = taskTokenUsage?.usage?.totalTokens ?? state.tokenUsage;
+          state.tokenUsageDetail = taskTokenUsage?.usage ?? state.tokenUsageDetail;
+          state.cumulativeTokenUsageDetail = tokenCount.totalUsage ?? state.cumulativeTokenUsageDetail;
           state.lastTokenUsageDetail = tokenCount.lastUsage ?? state.lastTokenUsageDetail;
         }
         continue;
@@ -363,7 +377,12 @@ class CodexGlobalWatcher {
       const runtimeState = runtimeByTurnId.get(parsed.turnId) ?? null;
       const durationStart = sessionStartedAt || runtimeState?.startedAt || null;
       const durationMs = resolveDurationMs(durationStart, parsed.timestamp ?? null);
-      const tokenUsage = runtimeState?.tokenUsage ?? latestTokenCount?.totalUsage?.totalTokens ?? null;
+      const fallbackTaskTokenUsage = resolveCodexTaskTokenUsage({
+        baselineUsage: runtimeState?.baselineTokenUsageDetail ?? latestCompletedTurnTokenUsageDetail,
+        totalUsage: runtimeState?.cumulativeTokenUsageDetail ?? latestTokenCount?.totalUsage ?? null,
+        lastUsage: runtimeState?.lastTokenUsageDetail ?? latestTokenCount?.lastUsage ?? null
+      });
+      const tokenUsage = runtimeState?.tokenUsage ?? fallbackTaskTokenUsage?.usage?.totalTokens ?? null;
 
       const payload = {
         eventId: `codex-watch-complete-${threadId}-${parsed.turnId}`,
@@ -379,12 +398,16 @@ class CodexGlobalWatcher {
           durationMs,
           tokenUsage,
           modelSlug: runtimeState?.modelSlug || defaultModelSlug || null,
-          tokenUsageDetail: runtimeState?.tokenUsageDetail ?? latestTokenCount?.totalUsage ?? null,
+          tokenUsageDetail: runtimeState?.tokenUsageDetail ?? fallbackTaskTokenUsage?.usage ?? null,
+          tokenUsageSource: fallbackTaskTokenUsage?.source ?? null,
+          cumulativeTokenUsageDetail: runtimeState?.cumulativeTokenUsageDetail ?? latestTokenCount?.totalUsage ?? null,
+          baselineTokenUsageDetail: runtimeState?.baselineTokenUsageDetail ?? latestCompletedTurnTokenUsageDetail,
           lastTokenUsageDetail: runtimeState?.lastTokenUsageDetail ?? latestTokenCount?.lastUsage ?? null
         } satisfies CodexRuntimeMeta
       } as const;
 
       await this.postEvent(payload);
+      latestCompletedTurnTokenUsageDetail = payload.runtimeMeta.cumulativeTokenUsageDetail ?? latestCompletedTurnTokenUsageDetail;
       this.processedSet.add(eventKey);
       this.state.processedEventKeys.push(eventKey);
       this.state.processedEventKeys = trimProcessedKeys(this.state.processedEventKeys);
@@ -621,16 +644,13 @@ function parseTokenCountLine(line: string) {
       type?: string;
       payload?: Record<string, unknown>;
       info?: Record<string, unknown>;
+      usage?: Record<string, unknown>;
     };
   } catch {
     return null;
   }
 
-  if (record.type !== "token_count") {
-    return null;
-  }
-
-  const snapshot = parseCodexTokenCountSnapshot(record);
+  const snapshot = parseCodexTokenCountSnapshotFromEventRecord(record);
   if (!snapshot) {
     return null;
   }
@@ -683,6 +703,22 @@ function resolveDurationMs(startedAt: string | null | undefined, completedAt: st
   return completedMs - startedMs;
 }
 
+function resolveLatestTokenUsageBeforeOffset(content: string, offset: number) {
+  if (offset <= 0) {
+    return null;
+  }
+
+  const prefix = Buffer.from(content, "utf8").subarray(0, offset).toString("utf8");
+  let latest: CodexTokenUsageBreakdown | null = null;
+  for (const line of prefix.split(/\r?\n/)) {
+    const snapshot = parseTokenCountLine(line.trim());
+    if (snapshot?.totalUsage) {
+      latest = snapshot.totalUsage;
+    }
+  }
+  return latest;
+}
+
 function pickEarlierTimestamp(first: string | null | undefined, second: string | null | undefined) {
   if (first && second) {
     return Date.parse(first) <= Date.parse(second) ? first : second;
@@ -702,6 +738,8 @@ function ensureTurnRuntimeState(map: Map<string, TurnRuntimeState>, turnId: stri
     modelSlug: null,
     tokenUsage: null,
     tokenUsageDetail: null,
+    baselineTokenUsageDetail: null,
+    cumulativeTokenUsageDetail: null,
     lastTokenUsageDetail: null
   };
   map.set(turnId, created);

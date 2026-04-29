@@ -6,6 +6,8 @@
  */
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
+import { extname, resolve } from "node:path";
 import { AppError } from "../../lib/errors";
 
 export type CodexModelCatalogRecord = {
@@ -37,6 +39,7 @@ export class CodexModelCatalogService {
     private readonly options: {
       codexBin: string;
       configPath?: string;
+      codexHomePath?: string;
       cacheTtlMs?: number;
     }
   ) {}
@@ -83,11 +86,7 @@ export class CodexModelCatalogService {
     let lastError: unknown = null;
     for (const [bin, args] of commands) {
       try {
-        const raw = execFileSync(bin, args, {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          maxBuffer: 10 * 1024 * 1024
-        }).trim();
+        const raw = this.execCodexCommand(bin, [...args]);
 
         const payload = JSON.parse(raw) as CodexModelCatalogPayload;
         const models = Array.isArray(payload.models) ? payload.models : [];
@@ -156,7 +155,7 @@ export class CodexModelCatalogService {
   }
 
   private readDefaultModel() {
-    const configPath = this.options.configPath ?? `${process.env.HOME || ""}/.codex/config.toml`;
+    const configPath = this.options.configPath ?? resolve(this.resolveCodexHomePath(), "config.toml");
     try {
       const content = readFileSync(configPath, "utf8");
       const match = content.match(/^\s*model\s*=\s*["']([^"']+)["']\s*$/m);
@@ -168,5 +167,76 @@ export class CodexModelCatalogService {
 
   private stringValue(value: unknown) {
     return typeof value === "string" ? value.trim() : "";
+  }
+
+  private execCodexCommand(bin: string, args: string[]) {
+    const env = this.buildCodexEnv(process.env);
+    const baseOptions = {
+      encoding: "utf8" as BufferEncoding,
+      env,
+      stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
+      maxBuffer: 10 * 1024 * 1024
+    };
+
+    if (process.platform === "win32" && this.shouldUseCmdWrapper(bin)) {
+      const cmdline = this.buildWindowsCmdline(bin, args);
+      return execFileSync("cmd.exe", ["/d", "/s", "/c", cmdline], {
+        ...baseOptions,
+        windowsHide: true
+      }).trim();
+    }
+
+    return execFileSync(bin, args, baseOptions).trim();
+  }
+
+  private shouldUseCmdWrapper(commandBin: string) {
+    const ext = extname(commandBin).toLowerCase();
+    return ext === ".cmd" || ext === ".bat" || ext.length === 0;
+  }
+
+  private buildWindowsCmdline(commandBin: string, commandArgs: string[]) {
+    const commandToken = this.isBareWindowsCommand(commandBin) ? commandBin : this.quoteWindowsArg(commandBin);
+    return [commandToken, ...commandArgs.map((arg) => this.toWindowsCmdArg(arg))].join(" ");
+  }
+
+  private isBareWindowsCommand(value: string) {
+    return /^[A-Za-z0-9_.-]+$/.test(value);
+  }
+
+  private toWindowsCmdArg(value: string) {
+    if (!this.needsWindowsQuote(value)) {
+      return value;
+    }
+    return this.quoteWindowsArg(value);
+  }
+
+  private needsWindowsQuote(value: string) {
+    return /[\s"&|<>^()%!]/.test(value);
+  }
+
+  private quoteWindowsArg(value: string) {
+    const sanitized = value.replace(/\r?\n/g, " ").replaceAll("%", "%%").replaceAll('"', '""');
+    return `"${sanitized}"`;
+  }
+
+  private buildCodexEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    return {
+      ...baseEnv,
+      CODEX_HOME: this.resolveCodexHomePath()
+    };
+  }
+
+  private resolveCodexHomePath() {
+    const configured = (this.options.codexHomePath || process.env.CODEX_HOME || "").trim();
+    if (configured) {
+      return resolve(configured);
+    }
+
+    const home =
+      process.env.HOME?.trim() ||
+      process.env.USERPROFILE?.trim() ||
+      `${process.env.HOMEDRIVE || ""}${process.env.HOMEPATH || ""}`.trim() ||
+      homedir();
+    return resolve(home, ".codex");
   }
 }

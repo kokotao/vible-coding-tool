@@ -708,9 +708,11 @@ export class FeishuOutboundNotifier {
     const tokenText = this.formatNumber(runtimeMeta?.tokenUsage ?? runtimeMeta?.tokenUsageDetail?.totalTokens ?? null);
     const modelText = (runtimeMeta?.modelSlug || "").trim() || "--";
     const summaryLine = `该次任务耗时：${durationText} · 消耗 tokens：${tokenText} · 使用模型：${modelText}`;
-    const totalUsageLine = this.formatRuntimeTokenLine("累计明细", runtimeMeta?.tokenUsageDetail ?? null);
+    const taskUsageLine = this.formatRuntimeTokenLine("本次明细", runtimeMeta?.tokenUsageDetail ?? null);
+    const cumulativeUsageLine = this.formatRuntimeTokenLine("累计明细", runtimeMeta?.cumulativeTokenUsageDetail ?? null);
     const lastUsageLine = this.formatRuntimeTokenLine("最近一次", runtimeMeta?.lastTokenUsageDetail ?? null);
-    const extraLines = [totalUsageLine, lastUsageLine].filter(Boolean);
+    const sourceLine = runtimeMeta?.tokenUsageSource ? `token_source: ${runtimeMeta.tokenUsageSource}` : null;
+    const extraLines = [taskUsageLine, cumulativeUsageLine, lastUsageLine, sourceLine].filter(Boolean);
 
     return extraLines.length > 0 ? `${summaryLine}\n${extraLines.join("\n")}` : summaryLine;
   }
