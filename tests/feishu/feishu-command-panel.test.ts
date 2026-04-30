@@ -28,6 +28,10 @@ function collectButtons(cardJson: string) {
     .flatMap((element) => element.actions || []);
 }
 
+function normalizeCardText(text: string) {
+  return text.replace(/<[^>]+>/g, "").replace(/\*\*/g, "").replace(/[：:]\s+/g, "：");
+}
+
 describe("feishu command panel model selection", () => {
   let db: ReturnType<typeof createSqliteDatabase>;
   let contextRepository: FeishuPanelContextRepository;
@@ -109,8 +113,9 @@ describe("feishu command panel model selection", () => {
       .filter((element) => element.tag === "markdown")
       .map((element) => element.content || "");
 
-    expect(textPayloads.join("\n")).toContain("支持推理");
-    expect(textPayloads.join("\n")).toContain("默认推理：中");
+    const normalizedText = normalizeCardText(textPayloads.join("\n"));
+    expect(normalizedText).toContain("支持推理");
+    expect(normalizedText).toContain("默认推理：中");
 
     const buttons = collectButtons(card);
     expect(buttons).toEqual(
@@ -173,7 +178,8 @@ describe("feishu command panel model selection", () => {
     expect(stored?.selectedModelSlug).toBe("gpt-5.4");
     expect(stored?.selectedModelName).toBe("GPT-5.4");
     expect(stored?.selectedReasoningLevel).toBe("high");
-    expect(result.card).toContain("默认推理：高");
-    expect(result.card).toContain("可选推理：低");
+    const normalizedCard = normalizeCardText(result.card);
+    expect(normalizedCard).toContain("默认推理：高");
+    expect(normalizedCard).toContain("可选推理：低");
   });
 });

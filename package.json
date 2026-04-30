@@ -1,6 +1,6 @@
 {
   "name": "@tauchun/viblect",
-  "version": "0.1.6",
+  "version": "0.1.10",
   "private": false,
   "description": "灵犀桥：连接 Vibe Coding 工具与 IM 机器人的双向智能网关服务。",
   "bin": {
@@ -31,7 +31,9 @@
     "install:check:unix": "bash scripts/install.sh",
     "install:check:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1",
     "publish:check": "node scripts/publish-safety-check.cjs",
+    "release:update-readme": "node scripts/update-readme-release-record.cjs",
     "prepublishOnly": "npm run publish:check",
+    "postpublish": "npm run release:update-readme",
     "prepack": "npm run build",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run"

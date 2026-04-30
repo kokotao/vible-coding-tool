@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -332,6 +332,93 @@ describe("codex cli runtime service", () => {
       const cmdArgs = (firstCall?.[1] as string[] | undefined) || [];
       expect(cmdArgs[2]).toContain("codex");
       expect(cmdArgs[2]).toContain("exec");
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs malformed project trust line and rewrites to safe multiline toml", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "codex-runtime-trust-repair-"));
+    const codexConfigPath = join(workspaceRoot, ".codex", "config.toml");
+    const persistedConfigPath = join(workspaceRoot, "codex-runtime-config.json");
+
+    const CodexCliRuntimeService = await loadRuntimeServiceWithChildProcessMock(() => {
+      throw new Error("not found");
+    });
+
+    try {
+      mkdirSync(join(workspaceRoot, ".codex"), { recursive: true });
+      writeFileSync(
+        codexConfigPath,
+        `[projects."${workspaceRoot.replaceAll("\\", "\\\\")}"]trust_level = "trusted"\n`,
+        "utf8"
+      );
+
+      const runtimeService = new CodexCliRuntimeService({
+        codexBin: "__missing_codex_binary__",
+        projectRoot: workspaceRoot,
+        codexConfigPath,
+        persistedConfigPath,
+        apiProbe: async () => ({
+          success: true,
+          checkedAt: "2026-04-30T08:00:00.000Z",
+          message: "probe ok",
+          target: "codex exec"
+        })
+      });
+
+      await runtimeService.saveApiConfig({ workspaceRoot });
+      const changed = runtimeService.authorizeProjectTrust();
+      expect(changed).toBe(true);
+
+      const repaired = readFileSync(codexConfigPath, "utf8");
+      expect(repaired).toContain(`[projects."${workspaceRoot.replaceAll("\\", "\\\\")}"]\ntrust_level = "trusted"`);
+      expect(repaired).not.toContain(
+        `[projects."${workspaceRoot.replaceAll("\\", "\\\\")}"]trust_level = "trusted"`
+      );
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("deduplicates repeated project sections before dispatch", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "codex-runtime-project-dedupe-"));
+    const codexConfigPath = join(workspaceRoot, ".codex", "config.toml");
+    const duplicateProjectPath = "D:\\WorkSpace";
+    const escapedProjectPath = duplicateProjectPath.replaceAll("\\", "\\\\");
+    const expectedHeader = `[projects."${escapedProjectPath}"]`;
+
+    const CodexCliRuntimeService = await loadRuntimeServiceWithChildProcessMock(() => {
+      throw new Error("not found");
+    });
+
+    try {
+      mkdirSync(join(workspaceRoot, ".codex"), { recursive: true });
+      writeFileSync(
+        codexConfigPath,
+        [
+          `${expectedHeader}`,
+          'trust_level = "trusted"',
+          "",
+          `${expectedHeader}`,
+          'trust_level = "trusted"',
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+
+      const runtimeService = new CodexCliRuntimeService({
+        codexBin: "__missing_codex_binary__",
+        projectRoot: workspaceRoot,
+        codexConfigPath
+      });
+
+      const context = runtimeService.prepareDispatchContext();
+      const repaired = readFileSync(codexConfigPath, "utf8");
+      const headerCount = repaired.split(/\r?\n/).filter((line) => line.trim() === expectedHeader).length;
+
+      expect(headerCount).toBe(1);
+      expect(context.authorization.warning).toContain("已自动修复 Codex 配置");
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true });
     }

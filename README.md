@@ -17,21 +17,23 @@
 
 维护规则：
 
-- 每次执行 `npm publish` 成功后，在本节最上方追加一条新版本记录。
-- 发布时间以 npm registry 实际时间为准（可用 `npm view @tauchun/viblect time --json` 查询）。
+- 每次执行 `npm publish` 成功后，会自动触发 `postpublish -> npm run release:update-readme` 更新本表。
+- 发布时间以 npm registry 实际时间为准（脚本自动执行 `npm view @tauchun/viblect time --json` 查询）。
+- 发布说明自动取当前 Git 提交日志（`git log -1`），并优先写入 GitHub 提交链接，确保发布记录可追溯。
 
 | 版本    | 发布时间（UTC）                | 说明           |
 | ----- | ------------------------ | ------------ |
+| 0.1.10 | 2026-04-30T10:34:41.957Z | [85880d9](https://github.com/kokotao/vible-coding-tool/commit/85880d9071e6db55b45dd27ffaf190cfddf9c7a0) feat: update dashboard, feishu integration, and branding assets |
+| 0.1.9 | 2026-04-30T10:22:05.665Z | [85880d9](https://github.com/kokotao/vible-coding-tool/commit/85880d9071e6db55b45dd27ffaf190cfddf9c7a0) feat: update dashboard, feishu integration, and branding assets |
+| 0.1.8 | 2026-04-30T10:08:31.861Z | Codex watcher 最近 open_id 回退与发布记录补齐 |
+| 0.1.7 | 2026-04-30T09:54:29.147Z | 仪表盘升级、飞书联调、品牌资源补齐 |
+| 0.1.6 | 2026-04-29T04:20:06.072Z | 飞书 Codex 流程和发布记录整理 |
 | 0.1.5 | 2026-04-28T15:49:55.539Z | CLI 与网关稳定性改进 |
 | 0.1.4 | 2026-04-28T15:38:47.342Z | 发版链路修复       |
 | 0.1.3 | 2026-04-28T15:00:14.377Z | 打包内容调整       |
 | 0.1.2 | 2026-04-28T14:58:03.787Z | 功能迭代发布       |
 | 0.1.1 | 2026-04-28T05:38:37.951Z | 初始能力增强       |
 | 0.1.0 | 2026-04-28T02:24:46.846Z | 首次发布         |
-
-待发布版本：
-
-- 0.1.6（已完成打包校验，`npm publish` 返回权限错误，待账号权限修复后重试）
 
 ## 3 分钟快速安装（L0/L1/L2/L3）
 

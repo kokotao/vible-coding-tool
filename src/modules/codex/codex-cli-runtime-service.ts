@@ -5,7 +5,7 @@
  * @date 2026-04-27 23:58
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, extname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { CodexLocalSessionService } from "./codex-local-session-service";
@@ -260,6 +260,17 @@ export class CodexCliRuntimeService {
 
   prepareDispatchContext(): CodexDispatchRuntimeContext {
     this.refreshRuntimeSnapshot();
+    const warningList: string[] = [];
+    try {
+      const repaired = this.repairCodexConfigIfNeeded();
+      if (repaired.updated) {
+        warningList.push(`已自动修复 Codex 配置：移除 ${repaired.removedProjectSections} 个重复项目配置段`);
+      }
+    } catch (error) {
+      warningList.push(`Codex 配置自动修复失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    this.refreshRuntimeSnapshot();
+    const warning = warningList.length > 0 ? warningList.join("；") : null;
     const workspaceRoot = this.getWorkspaceRoot();
     if (!workspaceRoot) {
       return {
@@ -272,7 +283,7 @@ export class CodexCliRuntimeService {
           trustedInConfig: this.runtimeSnapshot.trustedInConfig,
           trustLevel: this.runtimeSnapshot.trustLevel,
           trustUpdated: false,
-          warning: null
+          warning
         }
       };
     }
@@ -287,18 +298,17 @@ export class CodexCliRuntimeService {
           trustedInConfig: this.runtimeSnapshot.trustedInConfig,
           trustLevel: this.runtimeSnapshot.trustLevel,
           trustUpdated: false,
-          warning: null
+          warning
         }
       };
     }
 
     let trustUpdated = false;
-    let warning: string | null = null;
     if (!this.runtimeSnapshot.trustedInConfig) {
       try {
         trustUpdated = this.authorizeProjectTrust();
       } catch (error) {
-        warning = error instanceof Error ? error.message : String(error);
+        warningList.push(error instanceof Error ? error.message : String(error));
       }
       this.refreshRuntimeSnapshot();
     }
@@ -313,7 +323,7 @@ export class CodexCliRuntimeService {
         trustedInConfig: this.runtimeSnapshot.trustedInConfig,
         trustLevel: this.runtimeSnapshot.trustLevel,
         trustUpdated,
-        warning
+        warning: warningList.length > 0 ? warningList.join("；") : null
       }
     };
   }
@@ -494,37 +504,14 @@ export class CodexCliRuntimeService {
       content = readFileSync(codexConfigPath, "utf8");
     }
 
-    const sectionHeader = `[projects."${this.escapeTomlString(workspaceRoot)}"]`;
-    const headerRegex = new RegExp(`^${this.escapeRegExp(sectionHeader)}\\s*$`, "m");
-    let updated = false;
-
-    if (headerRegex.test(content)) {
-      const blockRegex = new RegExp(
-        `(^${this.escapeRegExp(sectionHeader)}\\s*$)([\\s\\S]*?)(?=^\\[[^\\n]+\\]\\s*$|\\s*$)`,
-        "m"
-      );
-      content = content.replace(blockRegex, (_matched, header: string, block: string) => {
-        if (/^\s*trust_level\s*=.*$/m.test(block)) {
-          const nextBlock = block.replace(/^\s*trust_level\s*=.*$/m, `trust_level = "trusted"`);
-          if (nextBlock !== block) {
-            updated = true;
-          }
-          return `${header}${nextBlock}`;
-        }
-
-        updated = true;
-        const divider = block.endsWith("\n") || block.length === 0 ? "" : "\n";
-        return `${header}${block}${divider}trust_level = "trusted"\n`;
-      });
-    } else {
-      updated = true;
-      const base = content.trimEnd();
-      content = `${base.length > 0 ? `${base}\n\n` : ""}${sectionHeader}\ntrust_level = "trusted"\n`;
-    }
+    const repaired = this.removeDuplicateProjectSections(content);
+    const { content: nextContent, updated: trustUpdated } = this.upsertProjectTrustLevel(repaired.content, workspaceRoot);
+    const updated = repaired.updated || trustUpdated;
 
     if (updated) {
       mkdirSync(dirname(codexConfigPath), { recursive: true });
-      writeFileSync(codexConfigPath, content, "utf8");
+      this.validateCodexConfigSyntax(nextContent);
+      this.writeFileAtomic(codexConfigPath, nextContent);
     }
     return updated;
   }
@@ -872,8 +859,178 @@ export class CodexCliRuntimeService {
     return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
   }
 
-  private escapeRegExp(value: string) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  private upsertProjectTrustLevel(content: string, workspaceRoot: string) {
+    const sectionHeader = `[projects."${this.escapeTomlString(workspaceRoot)}"]`;
+    const originalEndsWithNewline = content === "" || /\r?\n$/.test(content);
+    const rawLines = content === "" ? [] : content.split(/\r?\n/);
+    const normalizedLines: string[] = [];
+    let updated = false;
+
+    for (const line of rawLines) {
+      const split = this.splitInlineProjectHeaderAndAssignment(line, sectionHeader);
+      if (!split) {
+        normalizedLines.push(line);
+        continue;
+      }
+      updated = true;
+      normalizedLines.push(split.header, split.assignment);
+    }
+
+    const lines = normalizedLines;
+    const sectionStart = lines.findIndex((line) => line.trim() === sectionHeader);
+
+    if (sectionStart === -1) {
+      updated = true;
+      if (lines.length > 0 && lines[lines.length - 1]?.trim() !== "") {
+        lines.push("");
+      }
+      lines.push(sectionHeader, 'trust_level = "trusted"');
+    } else {
+      const nextSectionIndex = lines.findIndex(
+        (line, index) => index > sectionStart && this.isTomlSectionHeader(line)
+      );
+      const sectionEnd = nextSectionIndex === -1 ? lines.length : nextSectionIndex;
+      let trustLineIndex = -1;
+
+      for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
+        if (/^\s*trust_level\s*=/.test(lines[index] || "")) {
+          trustLineIndex = index;
+          break;
+        }
+      }
+
+      if (trustLineIndex >= 0) {
+        const desiredLine = 'trust_level = "trusted"';
+        if ((lines[trustLineIndex] || "").trim() !== desiredLine) {
+          updated = true;
+          lines[trustLineIndex] = desiredLine;
+        }
+      } else {
+        updated = true;
+        lines.splice(sectionEnd, 0, 'trust_level = "trusted"');
+      }
+    }
+
+    const nextContent = lines.length === 0 ? "" : `${lines.join("\n")}${originalEndsWithNewline ? "\n" : ""}`;
+    return {
+      content: nextContent,
+      updated
+    };
+  }
+
+  private splitInlineProjectHeaderAndAssignment(line: string, expectedHeader: string) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith(expectedHeader) || trimmed === expectedHeader) {
+      return null;
+    }
+    const assignment = trimmed.slice(expectedHeader.length).trimStart();
+    if (!assignment || assignment.startsWith("#")) {
+      return null;
+    }
+    return {
+      header: expectedHeader,
+      assignment
+    };
+  }
+
+  private isTomlSectionHeader(line: string) {
+    return /^\s*\[[^\]]+\]\s*(?:#.*)?$/.test(line);
+  }
+
+  private repairCodexConfigIfNeeded() {
+    const configPath = this.resolveCodexConfigPath();
+    if (!existsSync(configPath)) {
+      return {
+        updated: false,
+        removedProjectSections: 0
+      };
+    }
+
+    const content = readFileSync(configPath, "utf8");
+    const repaired = this.removeDuplicateProjectSections(content);
+    if (!repaired.updated) {
+      return repaired;
+    }
+
+    this.validateCodexConfigSyntax(repaired.content);
+    this.writeFileAtomic(configPath, repaired.content);
+    return repaired;
+  }
+
+  private removeDuplicateProjectSections(content: string) {
+    const originalEndsWithNewline = content === "" || /\r?\n$/.test(content);
+    const sourceLines = content === "" ? [] : content.split(/\r?\n/);
+    const resultLines: string[] = [];
+    const seenProjectKeys = new Set<string>();
+    let updated = false;
+    let removedProjectSections = 0;
+    let index = 0;
+
+    while (index < sourceLines.length) {
+      const line = sourceLines[index] || "";
+      const headerMatch = this.matchProjectSectionHeader(line);
+      if (!headerMatch) {
+        resultLines.push(line);
+        index += 1;
+        continue;
+      }
+
+      const sectionEnd = this.findTomlSectionEnd(sourceLines, index + 1);
+      if (seenProjectKeys.has(headerMatch.projectKey)) {
+        updated = true;
+        removedProjectSections += 1;
+        index = sectionEnd;
+        continue;
+      }
+
+      seenProjectKeys.add(headerMatch.projectKey);
+      for (let cursor = index; cursor < sectionEnd; cursor += 1) {
+        resultLines.push(sourceLines[cursor] || "");
+      }
+      index = sectionEnd;
+    }
+
+    return {
+      content: resultLines.length === 0 ? "" : `${resultLines.join("\n")}${originalEndsWithNewline ? "\n" : ""}`,
+      updated,
+      removedProjectSections
+    };
+  }
+
+  private matchProjectSectionHeader(line: string) {
+    const matched = line.match(/^\s*\[projects\."((?:[^"\\]|\\.)*)"\]\s*(?:#.*)?$/);
+    if (!matched?.[1]) {
+      return null;
+    }
+    return {
+      projectKey: matched[1]
+    };
+  }
+
+  private findTomlSectionEnd(lines: string[], startIndex: number) {
+    let cursor = startIndex;
+    while (cursor < lines.length) {
+      if (this.isTomlSectionHeader(lines[cursor] || "")) {
+        break;
+      }
+      cursor += 1;
+    }
+    return cursor;
+  }
+
+  private validateCodexConfigSyntax(content: string) {
+    const brokenProjectHeaderLine = content
+      .split(/\r?\n/)
+      .find((line) => /^\s*\[projects\."(?:[^"\\]|\\.)*"\]\s*[^#\s]/.test(line));
+    if (brokenProjectHeaderLine) {
+      throw new AppError("INVALID_CODEX_CONFIG", 500, `Invalid Codex config line: ${brokenProjectHeaderLine.trim()}`);
+    }
+  }
+
+  private writeFileAtomic(targetPath: string, content: string) {
+    const tempPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
+    writeFileSync(tempPath, content, "utf8");
+    renameSync(tempPath, targetPath);
   }
 
   private pathContains(pathValue: string, targetDir: string) {

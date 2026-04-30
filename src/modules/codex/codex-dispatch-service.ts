@@ -391,7 +391,10 @@ export class CodexDispatchService {
   }
 
   private resolveWorkingDirectory(projectPath: string | null) {
-    const workspaceRoot = this.deps.codexCliRuntimeService.getWorkspaceRoot();
+    const workspaceRoot =
+      typeof this.deps.codexCliRuntimeService.getWorkspaceRoot === "function"
+        ? this.deps.codexCliRuntimeService.getWorkspaceRoot()
+        : process.cwd();
     const normalized = (projectPath || "").trim();
     if (!normalized) {
       if (!workspaceRoot || !this.isDirectory(workspaceRoot)) {
