@@ -9,6 +9,20 @@
 const { existsSync } = require("node:fs");
 const path = require("node:path");
 
+const argv = process.argv.slice(2);
+if (argv.includes("--help") || argv.includes("-h")) {
+  console.log("viblect - Vible Coding Tool Gateway CLI");
+  console.log("");
+  console.log("Usage:");
+  console.log("  viblect              Start gateway server");
+  console.log("  viblect --help       Show this help message");
+  console.log("");
+  console.log("Environment:");
+  console.log("  HOST                 Default 127.0.0.1");
+  console.log("  PORT                 Default 3000");
+  process.exit(0);
+}
+
 const serverEntry = path.resolve(__dirname, "..", "dist", "src", "server.js");
 
 if (!existsSync(serverEntry)) {

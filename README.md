@@ -435,3 +435,13 @@ CODEX_WATCH_AUTO_START=false
 ### --codex å›æ¨ç»“æœåˆ°é£ä¹¦
 
 ![codex å®Œæˆæ¨é€](image.png)
+
+## ·¢²¼¼Ó¹Ì£¨½×¶Î A£©
+
+- `prepack` ÒÑÉı¼¶Îª£º`npm run build && npm run build:clean-maps && npm run publish:check`
+- `publish:check` ÏÖÔÚ»áÓ²À¹½Ø£º`*.map`¡¢`src/**`¡¢`tests/**`¡¢`docs/**`¡¢`.env*`¡¢`data/**`
+- ½¨ÒéÃ¿´Î·¢²¼Ç°Ö´ĞĞ£º
+  1. `npm run build`
+  2. `npm run build:clean-maps`
+  3. `npm run publish:check`
+  4. `npm pack --dry-run --json`

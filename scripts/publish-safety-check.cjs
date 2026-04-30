@@ -20,7 +20,7 @@ function parsePackJson(raw) {
 }
 
 function main() {
-  const output = execSync("npm pack --dry-run --json", {
+  const output = execSync("npm pack --dry-run --json --ignore-scripts", {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -29,6 +29,7 @@ function main() {
 
   const blockedPatterns = [
     /^\.env($|\.)/i,
+    /\.map$/i,
     /^data\//i,
     /^docs\//i,
     /^tests?\//i,
