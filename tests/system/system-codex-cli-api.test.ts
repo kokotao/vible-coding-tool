@@ -44,9 +44,8 @@ describe("system codex cli api", () => {
       expect(statusResponse.statusCode).toBe(200);
       expect(statusResponse.json()).toEqual(
         expect.objectContaining({
-          installed: false,
           codexBin: "__missing_codex_binary__",
-          projectRoot: workspaceRoot,
+          workspaceConfigured: false,
           setupWizard: expect.objectContaining({
             required: true,
             steps: expect.any(Array),
@@ -60,7 +59,8 @@ describe("system codex cli api", () => {
         url: "/api/system/codex-cli/config",
         payload: {
           apiBaseUrl: "https://gateway.example.com/v1",
-          apiKey: "sk-test-1234567890"
+          apiKey: "sk-test-1234567890",
+          workspaceRoot
         }
       });
       expect(saveResponse.statusCode).toBe(200);
@@ -70,7 +70,9 @@ describe("system codex cli api", () => {
             baseUrl: "https://gateway.example.com/v1",
             keyConfigured: true,
             usable: true
-          })
+          }),
+          workspaceRoot,
+          workspaceConfigured: true
         })
       );
       expect(saveResponse.json().apiConfig.keyMasked).toContain("***");

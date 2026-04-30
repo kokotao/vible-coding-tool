@@ -10,7 +10,6 @@ import { IdempotencyRepository } from "../../storage/repositories/idempotency-re
 import { FeishuIdentityRepository } from "../../storage/repositories/feishu-identity-repository";
 import { buildFeishuTaskStatusCard } from "../feishu/feishu-command-panel";
 import {
-  formatCodexTokenUsageBreakdown,
   type CodexRuntimeMeta,
   type CodexTokenUsageBreakdown
 } from "../codex/codex-runtime-meta";
@@ -711,7 +710,7 @@ export class FeishuOutboundNotifier {
     const taskUsageLine = this.formatRuntimeTokenLine("本次明细", runtimeMeta?.tokenUsageDetail ?? null);
     const cumulativeUsageLine = this.formatRuntimeTokenLine("累计明细", runtimeMeta?.cumulativeTokenUsageDetail ?? null);
     const lastUsageLine = this.formatRuntimeTokenLine("最近一次", runtimeMeta?.lastTokenUsageDetail ?? null);
-    const sourceLine = runtimeMeta?.tokenUsageSource ? `token_source: ${runtimeMeta.tokenUsageSource}` : null;
+    const sourceLine = this.formatTokenUsageSource(runtimeMeta?.tokenUsageSource ?? null);
     const extraLines = [taskUsageLine, cumulativeUsageLine, lastUsageLine, sourceLine].filter(Boolean);
 
     return extraLines.length > 0 ? `${summaryLine}\n${extraLines.join("\n")}` : summaryLine;
@@ -777,12 +776,51 @@ export class FeishuOutboundNotifier {
     label: string,
     usage: CodexTokenUsageBreakdown | null
   ) {
-    const formatted = formatCodexTokenUsageBreakdown(usage, (value) => this.formatNumber(value));
+    const formatted = this.formatTokenUsageBreakdownZh(usage);
     if (!formatted) {
       return null;
     }
 
     return `${label}：${formatted}`;
+  }
+
+  private formatTokenUsageBreakdownZh(usage: CodexTokenUsageBreakdown | null) {
+    if (!usage) {
+      return null;
+    }
+
+    const hasAnyValue =
+      usage.inputTokens !== null && usage.inputTokens !== undefined ||
+      usage.cachedInputTokens !== null && usage.cachedInputTokens !== undefined ||
+      usage.outputTokens !== null && usage.outputTokens !== undefined ||
+      usage.reasoningOutputTokens !== null && usage.reasoningOutputTokens !== undefined ||
+      usage.totalTokens !== null && usage.totalTokens !== undefined;
+
+    if (!hasAnyValue) {
+      return null;
+    }
+
+    return [
+      `输入 ${this.formatNumber(usage.inputTokens)}`,
+      `缓存输入 ${this.formatNumber(usage.cachedInputTokens)}`,
+      `输出 ${this.formatNumber(usage.outputTokens)}`,
+      `推理输出 ${this.formatNumber(usage.reasoningOutputTokens)}`,
+      `总计 ${this.formatNumber(usage.totalTokens)}`
+    ].join(" / ");
+  }
+
+  private formatTokenUsageSource(source: "delta" | "last_usage" | "cumulative_fallback" | null | undefined) {
+    if (!source) {
+      return null;
+    }
+
+    if (source === "delta") {
+      return "统计来源：前后差值";
+    }
+    if (source === "last_usage") {
+      return "统计来源：最近一次";
+    }
+    return "统计来源：累计兜底";
   }
 
   private ensureThreadLine(rendered: string, input: NotifyTaskStatusInput) {

@@ -83,6 +83,19 @@ select {
   letter-spacing: -0.04em;
 }
 
+.hero-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.hero-logo {
+  height: 34px;
+  width: auto;
+  object-fit: contain;
+}
+
 .hero p {
   margin: 10px 0 0;
   max-width: 720px;
@@ -2558,6 +2571,39 @@ select {
   grid-template-columns: minmax(0, 1.3fr) minmax(340px, 1fr);
   gap: 18px;
   padding: 6px 4px 2px;
+}
+
+.mc-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.mc-brand-logo {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  filter: drop-shadow(0 12px 28px rgba(40, 120, 255, 0.24));
+}
+
+.mc-brand-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.mc-brand-name {
+  font-size: 14px;
+  color: #a8c8ff;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.mc-brand-tag {
+  font-size: 13px;
+  color: #7faddf;
+  letter-spacing: 0.04em;
 }
 
 .mc-title-wrap h1 {

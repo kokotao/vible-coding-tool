@@ -5,6 +5,10 @@ const envSchema = z.object({
   HOST: z.string().min(1).default("127.0.0.1"),
   LOG_LEVEL: z.string().min(1).default("info"),
   LOG_DIR: z.string().min(1).default("./logs"),
+  AUTO_OPEN_BROWSER: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => (value ? value === "true" : process.env.NODE_ENV !== "test")),
   LOG_RETENTION_DAYS: z.coerce.number().int().positive().min(1).max(365).default(7),
   DATABASE_PATH: z.string().min(1).default("./data/gateway.db"),
   CODEX_INGRESS_TOKEN: z.string().optional(),
@@ -43,6 +47,7 @@ export type AppEnv = {
   host: string;
   logLevel: string;
   logDir: string;
+  autoOpenBrowser: boolean;
   logRetentionDays: number;
   databasePath: string;
   codexIngressToken: string | undefined;
@@ -69,6 +74,7 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     host: parsed.HOST,
     logLevel: parsed.LOG_LEVEL,
     logDir: parsed.LOG_DIR,
+    autoOpenBrowser: parsed.AUTO_OPEN_BROWSER,
     logRetentionDays: parsed.LOG_RETENTION_DAYS,
     databasePath: parsed.DATABASE_PATH,
     codexIngressToken: parsed.CODEX_INGRESS_TOKEN,

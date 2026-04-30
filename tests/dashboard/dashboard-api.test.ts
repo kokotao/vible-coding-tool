@@ -39,3 +39,33 @@ describe("dashboard summary api", () => {
     await app.close();
   });
 });
+
+describe("dashboard readme api", () => {
+  it("returns readme document content", async () => {
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent"
+      }
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/dashboard/readme"
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const payload = response.json();
+    expect(payload.fileName).toBe("README.md");
+    expect(typeof payload.updatedAt).toBe("string");
+    expect(typeof payload.content).toBe("string");
+    expect(payload.content.length).toBeGreaterThan(0);
+
+    await app.close();
+  });
+});

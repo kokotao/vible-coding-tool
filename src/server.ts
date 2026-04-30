@@ -1,6 +1,7 @@
 import { buildApp } from "./app";
 import { loadEnv } from "./config/env";
 import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { loadEnvFile } from "node:process";
 import { resolveLogFilePath } from "./lib/logger";
 import { createTerminalEventStream } from "./lib/terminal-event-stream";
@@ -65,7 +66,8 @@ async function main() {
       host: env.host,
       port: env.port
     });
-    const baseUrl = `http://${env.host}:${env.port}`;
+    const baseHost = resolveBrowserHost(env.host);
+    const baseUrl = `http://${baseHost}:${env.port}`;
     const systemConfigUrl = `${baseUrl}/?drawer=system`;
     printStartupBanner({
       baseUrl,
@@ -74,6 +76,10 @@ async function main() {
       status: startupStatus,
       systemConfigUrl
     });
+    if (env.autoOpenBrowser) {
+      openUrlInDefaultBrowser(systemConfigUrl);
+      app.log.info({ url: systemConfigUrl }, "Opened browser for system configuration");
+    }
 
     codexCliRuntimeService.emitStartupGuidance({
       logger: app.log,
@@ -191,6 +197,42 @@ async function main() {
 
 void main();
 
+function resolveBrowserHost(host: string) {
+  const normalized = host.trim();
+  if (!normalized || normalized === "0.0.0.0" || normalized === "::") {
+    return "127.0.0.1";
+  }
+  return normalized;
+}
+
+function openUrlInDefaultBrowser(url: string) {
+  try {
+    if (process.platform === "win32") {
+      spawn("cmd", ["/c", "start", "", url], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true
+      }).unref();
+      return;
+    }
+
+    if (process.platform === "darwin") {
+      spawn("open", [url], {
+        detached: true,
+        stdio: "ignore"
+      }).unref();
+      return;
+    }
+
+    spawn("xdg-open", [url], {
+      detached: true,
+      stdio: "ignore"
+    }).unref();
+  } catch {
+    // ignore browser open failures
+  }
+}
+
 const ANSI = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
@@ -222,7 +264,7 @@ function printStartupBanner(input: {
   const line = withColor("=".repeat(76), ANSI.cyan);
   console.log("");
   console.log(line);
-  console.log(withColor(`${ANSI.bold}Vible Coding Tool 网关启动完成${ANSI.reset}`, ANSI.magenta));
+  console.log(withColor(`${ANSI.bold}灵犀桥（Lingxi Bridge）网关启动完成${ANSI.reset}`, ANSI.magenta));
   console.log(withColor(`服务地址      ${input.baseUrl}`, ANSI.green));
   console.log(withColor(`系统配置页    ${input.systemConfigUrl}`, ANSI.cyan));
   console.log(withColor(`CLI 状态      ${statusLabel}`, statusTone));

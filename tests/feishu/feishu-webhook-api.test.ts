@@ -695,6 +695,346 @@ describe("feishu webhook api", () => {
     }
   });
 
+  it("parses panel project/session commands with <at> prefix and avoids reusing old session when starting new session", async () => {
+    const fixture = createFeishuPanelSessionsFixture();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        codexAutoDispatchEnabled: false,
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: fixture.sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000
+      }
+    });
+
+    try {
+      const selectSessionResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-mention-select-session",
+              message_type: "text",
+              content: JSON.stringify({
+                text: `<at user_id="ou_bot_demo">机器人</at> 选择session：${fixture.threadAlpha1}`,
+                mentions: [{ id: { open_id: "ou_bot_demo" } }]
+              })
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_mention_panel_user"
+              }
+            }
+          }
+        }
+      });
+      expect(selectSessionResponse.statusCode).toBe(200);
+      expect(selectSessionResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "select_session",
+          context: expect.objectContaining({
+            selectedProjectPath: fixture.projectAlphaPath,
+            selectedThreadId: fixture.threadAlpha1
+          })
+        })
+      );
+
+      const selectProjectResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-mention-select-project",
+              message_type: "text",
+              content: JSON.stringify({
+                text: `<at user_id="ou_bot_demo">机器人</at> 选择项目：${fixture.projectBetaPath}`,
+                mentions: [{ id: { open_id: "ou_bot_demo" } }]
+              })
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_mention_panel_user"
+              }
+            }
+          }
+        }
+      });
+      expect(selectProjectResponse.statusCode).toBe(200);
+      expect(selectProjectResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "select_project",
+          context: expect.objectContaining({
+            selectedProjectPath: fixture.projectBetaPath,
+            selectedThreadId: null
+          })
+        })
+      );
+
+      const composeResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-mention-compose-project-session",
+              message_type: "text",
+              content: JSON.stringify({
+                text: "<at user_id=\"ou_bot_demo\">机器人</at> 新建 session",
+                mentions: [{ id: { open_id: "ou_bot_demo" } }]
+              })
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_mention_panel_user"
+              }
+            }
+          }
+        }
+      });
+      expect(composeResponse.statusCode).toBe(200);
+      expect(composeResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "compose_project_session_command",
+          context: expect.objectContaining({
+            selectedProjectPath: fixture.projectBetaPath,
+            selectedThreadId: null,
+            pendingComposeMode: "project_session_command"
+          })
+        })
+      );
+
+      const dispatchResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-mention-new-session-dispatch",
+              message_type: "text",
+              content: JSON.stringify({
+                text: "继续拆分面板任务"
+              })
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_mention_panel_user"
+              }
+            }
+          }
+        }
+      });
+      expect(dispatchResponse.statusCode).toBe(200);
+      expect(dispatchResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          sessionId: expect.any(String),
+          dispatch: expect.objectContaining({
+            skipped: true,
+            reason: "dispatch_disabled"
+          })
+        })
+      );
+
+      const dispatchJson = dispatchResponse.json() as { sessionId: string };
+      expect(dispatchJson.sessionId).not.toBe(fixture.threadAlpha1);
+      expect(dispatchJson.sessionId).toMatch(/^[0-9a-f-]{36}$/i);
+    } finally {
+      await app.close();
+      rmSync(fixture.sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses selected project in p2p when command uses spaces instead of colon", async () => {
+    const fixture = createFeishuPanelSessionsFixture();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        codexAutoDispatchEnabled: false,
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: fixture.sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000
+      }
+    });
+
+    try {
+      const selectSessionResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-p2p-space-select-session",
+              message_type: "text",
+              content: `{"text":"选择session ${fixture.threadAlpha1}"}`
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_p2p_space_user"
+              }
+            }
+          }
+        }
+      });
+      expect(selectSessionResponse.statusCode).toBe(200);
+      expect(selectSessionResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "select_session",
+          context: expect.objectContaining({
+            selectedThreadId: fixture.threadAlpha1
+          })
+        })
+      );
+
+      const selectProjectResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-p2p-space-select-project",
+              message_type: "text",
+              content: `{"text":"选择项目 ${fixture.projectBetaPath}"}`
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_p2p_space_user"
+              }
+            }
+          }
+        }
+      });
+      expect(selectProjectResponse.statusCode).toBe(200);
+      expect(selectProjectResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "select_project",
+          context: expect.objectContaining({
+            selectedProjectPath: fixture.projectBetaPath,
+            selectedThreadId: null
+          })
+        })
+      );
+
+      const composeResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-p2p-space-compose-project-session",
+              message_type: "text",
+              content: "{\"text\":\"新建 session\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_p2p_space_user"
+              }
+            }
+          }
+        }
+      });
+      expect(composeResponse.statusCode).toBe(200);
+      expect(composeResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          command: "compose_project_session_command",
+          context: expect.objectContaining({
+            selectedProjectPath: fixture.projectBetaPath,
+            selectedThreadId: null,
+            pendingComposeMode: "project_session_command"
+          })
+        })
+      );
+
+      const dispatchResponse = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-p2p-space-new-session-dispatch",
+              message_type: "text",
+              content: "{\"text\":\"继续拆分面板任务\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_p2p_space_user"
+              }
+            }
+          }
+        }
+      });
+      expect(dispatchResponse.statusCode).toBe(200);
+      expect(dispatchResponse.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          sessionId: expect.any(String),
+          dispatch: expect.objectContaining({
+            skipped: true,
+            reason: "dispatch_disabled"
+          })
+        })
+      );
+
+      const dispatchJson = dispatchResponse.json() as { sessionId: string };
+      expect(dispatchJson.sessionId).not.toBe(fixture.threadAlpha1);
+      expect(dispatchJson.sessionId).toMatch(/^[0-9a-f-]{36}$/i);
+    } finally {
+      await app.close();
+      rmSync(fixture.sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to open_id when Feishu user profile name is unavailable", async () => {
     const mockOpenApi = createFeishuOpenApiMock();
     const db = createSqliteDatabase(":memory:");

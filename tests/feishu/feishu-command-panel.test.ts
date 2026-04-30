@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { buildFeishuModelListCard, parseFeishuPanelActionValue } from "../../src/modules/feishu/feishu-command-panel";
+import {
+  buildFeishuModelListCard,
+  parseFeishuPanelActionValue,
+  parseFeishuPanelCommand
+} from "../../src/modules/feishu/feishu-command-panel";
 import { FeishuCommandPanelService } from "../../src/modules/feishu/feishu-command-panel-service";
 import { FeishuPanelContextRepository } from "../../src/storage/repositories/feishu-panel-context-repository";
 import { createSqliteDatabase, migrateDatabase } from "../../src/storage/sqlite";
@@ -46,6 +50,22 @@ describe("feishu command panel model selection", () => {
       selector: "gpt-5.4",
       reasoningLevel: "high"
     });
+  });
+
+  it("parses project/session/model commands separated by spaces", () => {
+    expect(parseFeishuPanelCommand("选择项目 /tmp/demo")).toEqual({
+      actionType: "select_project",
+      selector: "/tmp/demo"
+    });
+    expect(parseFeishuPanelCommand("选择session 019dca61-0d90-7f01-b1b0-f1bb79eb955e")).toEqual({
+      actionType: "select_session",
+      selector: "019dca61-0d90-7f01-b1b0-f1bb79eb955e"
+    });
+    expect(parseFeishuPanelCommand("选择模型 gpt-5.4")).toEqual({
+      actionType: "select_model",
+      selector: "gpt-5.4"
+    });
+    expect(parseFeishuPanelCommand("选择项目")).toBeNull();
   });
 
   it("renders reasoning buttons on the model list card", () => {

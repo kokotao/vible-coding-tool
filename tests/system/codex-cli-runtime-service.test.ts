@@ -124,6 +124,7 @@ describe("codex cli runtime service", () => {
         {
           apiBaseUrl: "https://gateway.example.com/v1",
           apiKey: "sk-test-1234567890",
+          workspaceRoot,
           updatedAt: "2026-04-28T07:00:00.000Z",
           apiProbePassed: false,
           apiProbeCheckedAt: "",
@@ -197,6 +198,24 @@ describe("codex cli runtime service", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     const workspaceRoot = mkdtempSync(join(tmpdir(), "codex-runtime-home-env-"));
     const codexHomePath = join(workspaceRoot, ".codex-home");
+    const persistedConfigPath = join(workspaceRoot, "codex-runtime-config.json");
+    writeFileSync(
+      persistedConfigPath,
+      JSON.stringify(
+        {
+          apiBaseUrl: "",
+          apiKey: "",
+          workspaceRoot,
+          updatedAt: "2026-04-28T07:00:00.000Z",
+          apiProbePassed: false,
+          apiProbeCheckedAt: "",
+          apiProbeMessage: "",
+          apiProbeTarget: ""
+        },
+        null,
+        2
+      )
+    );
 
     const spawnImpl = vi.fn(() => {
       const child = new EventEmitter() as EventEmitter & {
@@ -225,7 +244,8 @@ describe("codex cli runtime service", () => {
       const runtimeService = new CodexCliRuntimeService({
         codexBin: "codex",
         projectRoot: workspaceRoot,
-        codexHomePath
+        codexHomePath,
+        persistedConfigPath
       });
 
       const status = await runtimeService.probeAvailabilityAtStartup();
@@ -247,6 +267,24 @@ describe("codex cli runtime service", () => {
 
   it("uses cmd wrapper for startup probe on windows when resolved codex command has no extension", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "codex-runtime-win-probe-"));
+    const persistedConfigPath = join(workspaceRoot, "codex-runtime-config.json");
+    writeFileSync(
+      persistedConfigPath,
+      JSON.stringify(
+        {
+          apiBaseUrl: "",
+          apiKey: "",
+          workspaceRoot,
+          updatedAt: "2026-04-28T07:00:00.000Z",
+          apiProbePassed: false,
+          apiProbeCheckedAt: "",
+          apiProbeMessage: "",
+          apiProbeTarget: ""
+        },
+        null,
+        2
+      )
+    );
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
 
     const spawnImpl = vi.fn(() => {
@@ -275,7 +313,8 @@ describe("codex cli runtime service", () => {
     try {
       const runtimeService = new CodexCliRuntimeService({
         codexBin: "codex",
-        projectRoot: workspaceRoot
+        projectRoot: workspaceRoot,
+        persistedConfigPath
       });
 
       const status = await runtimeService.probeAvailabilityAtStartup();

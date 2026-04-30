@@ -142,3 +142,33 @@ CREATE TABLE IF NOT EXISTS connector_configs (
   last_test_result TEXT,
   updated_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status_started_id
+  ON tasks(status, started_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_session_started_id
+  ON tasks(session_id, started_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_finished_started_id
+  ON tasks(finished_at, started_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tool_sessions_provider_status_updated_id
+  ON tool_sessions(tool_provider, status, updated_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_task_created_id
+  ON messages(task_id, created_at ASC, id ASC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session_created_id
+  ON messages(session_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_sender_platform_direction_created_id
+  ON messages(sender_id, source_platform, direction, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_risk_confirmations_status_expired_id
+  ON risk_confirmations(status, expired_at ASC, id ASC);
+
+CREATE INDEX IF NOT EXISTS idx_risk_confirmations_task_expired_id
+  ON risk_confirmations(task_id, expired_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created_id
+  ON audit_logs(session_id, created_at DESC, id DESC);

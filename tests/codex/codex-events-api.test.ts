@@ -236,8 +236,8 @@ describe("codex events api", () => {
       expect(outboundPayload.content).toContain("gpt-5.4");
       expect(outboundPayload.content).toContain("累计明细");
       expect(outboundPayload.content).toContain("最近一次");
-      expect(outboundPayload.content).toContain("cached_input 500");
-      expect(outboundPayload.content).toContain("reasoning_output 76");
+      expect(outboundPayload.content).toContain("缓存输入 500");
+      expect(outboundPayload.content).toContain("推理输出 76");
       expect(outboundPayload.content).not.toContain("任务标题：");
       expect(outboundPayload.content).not.toContain("完成内容：");
       expect((outboundPayload.content.match(/任务状态：/g) || []).length).toBe(0);

@@ -5,10 +5,11 @@
  * @date 2026-04-27 23:58
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, extname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { CodexLocalSessionService } from "./codex-local-session-service";
+import { AppError } from "../../lib/errors";
 
 type LoggerLike = {
   info?: (payload: unknown, message?: string) => void;
@@ -19,6 +20,7 @@ type LoggerLike = {
 type PersistedCodexRuntimeConfig = {
   apiBaseUrl: string;
   apiKey: string;
+  workspaceRoot: string;
   updatedAt: string;
   apiProbePassed: boolean;
   apiProbeCheckedAt: string;
@@ -60,6 +62,9 @@ export type CodexCliRuntimeStatus = {
   detectionMessage: string | null;
   installCommand: string;
   projectRoot: string;
+  workspaceRoot: string | null;
+  workspaceConfigured: boolean;
+  bootstrapProjectRoot: string;
   dispatchCommandPreview: string;
   sessionScan: SessionScanState;
   projectAuthorization: {
@@ -120,7 +125,7 @@ export type CodexDispatchRuntimeContext = {
 
 export class CodexCliRuntimeService {
   private readonly codexBin: string;
-  private readonly projectRoot: string;
+  private readonly bootstrapProjectRoot: string;
   private readonly codexHomePath: string;
   private readonly persistedConfigPath: string;
   private readonly codexConfigPath: string;
@@ -130,6 +135,7 @@ export class CodexCliRuntimeService {
   private persistedConfig: PersistedCodexRuntimeConfig = {
     apiBaseUrl: "",
     apiKey: "",
+    workspaceRoot: "",
     updatedAt: "",
     apiProbePassed: false,
     apiProbeCheckedAt: "",
@@ -163,15 +169,18 @@ export class CodexCliRuntimeService {
     apiProbe?: ApiProbeFn;
   }) {
     this.codexBin = options.codexBin;
-    this.projectRoot = resolve(options.projectRoot);
+    this.bootstrapProjectRoot = resolve(options.projectRoot);
     this.codexHomePath = this.resolveWritableCodexHomePath(options.codexHomePath);
-    this.persistedConfigPath = resolve(options.persistedConfigPath || resolve(this.projectRoot, "data", "codex-runtime-config.json"));
+    this.persistedConfigPath = resolve(
+      options.persistedConfigPath || resolve(this.bootstrapProjectRoot, "data", "codex-runtime-config.json")
+    );
     this.codexConfigPath = resolve(options.codexConfigPath || resolve(this.codexHomePath, "config.toml"));
     this.installCommand = options.installCommand?.length
       ? options.installCommand
       : ["npm", "install", "-g", "@openai/codex"];
     this.apiProbe = options.apiProbe || this.probeApiAvailability.bind(this);
-    this.dispatchAccessArgs = ["--sandbox", "danger-full-access", "--ask-for-approval", "never", "--cd", this.projectRoot];
+    // `--cd` must be decided per-task by dispatcher to honor selected project/session routing.
+    this.dispatchAccessArgs = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"];
     this.loadPersistedConfig();
   }
 
@@ -185,6 +194,7 @@ export class CodexCliRuntimeService {
     const next: PersistedCodexRuntimeConfig = {
       apiBaseUrl: this.persistedConfig.apiBaseUrl,
       apiKey: this.persistedConfig.apiKey,
+      workspaceRoot: this.persistedConfig.workspaceRoot,
       updatedAt: this.persistedConfig.updatedAt,
       apiProbePassed: this.persistedConfig.apiProbePassed,
       apiProbeCheckedAt: this.persistedConfig.apiProbeCheckedAt,
@@ -214,6 +224,7 @@ export class CodexCliRuntimeService {
     const setupWizard = this.buildSetupWizard({
       apiUsable: this.persistedConfig.apiProbePassed
     });
+    const workspaceRoot = this.getWorkspaceRoot();
 
     return {
       codexBin: this.codexBin,
@@ -222,8 +233,11 @@ export class CodexCliRuntimeService {
       version: this.runtimeSnapshot.version,
       detectionMessage: this.runtimeSnapshot.detectionMessage,
       installCommand: this.installCommand.join(" "),
-      projectRoot: this.projectRoot,
-      dispatchCommandPreview: `${this.runtimeSnapshot.resolvedCodexBin || this.codexBin} ${this.dispatchAccessArgs.join(" ")} exec --json <prompt>`,
+      projectRoot: workspaceRoot || "",
+      workspaceRoot,
+      workspaceConfigured: Boolean(workspaceRoot),
+      bootstrapProjectRoot: this.bootstrapProjectRoot,
+      dispatchCommandPreview: `${this.runtimeSnapshot.resolvedCodexBin || this.codexBin} ${this.dispatchAccessArgs.join(" ")} exec --json <prompt>  (cwd=selected project)`,
       sessionScan: this.sessionScan,
       projectAuthorization: {
         trustedInConfig: this.runtimeSnapshot.trustedInConfig,
@@ -246,6 +260,22 @@ export class CodexCliRuntimeService {
 
   prepareDispatchContext(): CodexDispatchRuntimeContext {
     this.refreshRuntimeSnapshot();
+    const workspaceRoot = this.getWorkspaceRoot();
+    if (!workspaceRoot) {
+      return {
+        ready: false,
+        reason: "workspace_root_missing",
+        codexBin: this.codexBin,
+        extraArgs: this.dispatchAccessArgs,
+        env: this.buildDispatchEnv(process.env),
+        authorization: {
+          trustedInConfig: this.runtimeSnapshot.trustedInConfig,
+          trustLevel: this.runtimeSnapshot.trustLevel,
+          trustUpdated: false,
+          warning: null
+        }
+      };
+    }
     if (!this.runtimeSnapshot.installed) {
       return {
         ready: false,
@@ -288,10 +318,11 @@ export class CodexCliRuntimeService {
     };
   }
 
-  async saveApiConfig(input: { apiBaseUrl?: string | null; apiKey?: string | null }) {
+  async saveApiConfig(input: { apiBaseUrl?: string | null; apiKey?: string | null; workspaceRoot?: string | null }) {
     const next: PersistedCodexRuntimeConfig = {
       apiBaseUrl: this.persistedConfig.apiBaseUrl,
       apiKey: this.persistedConfig.apiKey,
+      workspaceRoot: this.persistedConfig.workspaceRoot,
       updatedAt: this.persistedConfig.updatedAt,
       apiProbePassed: this.persistedConfig.apiProbePassed,
       apiProbeCheckedAt: this.persistedConfig.apiProbeCheckedAt,
@@ -304,6 +335,9 @@ export class CodexCliRuntimeService {
     }
     if (input.apiKey !== undefined) {
       next.apiKey = (input.apiKey || "").trim();
+    }
+    if (input.workspaceRoot !== undefined) {
+      next.workspaceRoot = this.normalizeWorkspaceRoot(input.workspaceRoot);
     }
     next.updatedAt = new Date().toISOString();
     const probe = await this.apiProbe({
@@ -335,7 +369,7 @@ export class CodexCliRuntimeService {
     const inheritStdio = Boolean(input.inheritStdio);
     const result = await new Promise<InstallResult>((resolvePromise) => {
       const child = spawn(command, args, {
-        cwd: this.projectRoot,
+        cwd: this.bootstrapProjectRoot,
         env: process.env,
         stdio: inheritStdio ? "inherit" : ["ignore", "pipe", "pipe"]
       });
@@ -450,13 +484,17 @@ export class CodexCliRuntimeService {
   }
 
   authorizeProjectTrust() {
+    const workspaceRoot = this.getWorkspaceRoot();
+    if (!workspaceRoot) {
+      throw new AppError("WORKSPACE_ROOT_REQUIRED", 400, "Workspace root is required before project authorization");
+    }
     const codexConfigPath = this.resolveCodexConfigPath();
     let content = "";
     if (existsSync(codexConfigPath)) {
       content = readFileSync(codexConfigPath, "utf8");
     }
 
-    const sectionHeader = `[projects."${this.escapeTomlString(this.projectRoot)}"]`;
+    const sectionHeader = `[projects."${this.escapeTomlString(workspaceRoot)}"]`;
     const headerRegex = new RegExp(`^${this.escapeRegExp(sectionHeader)}\\s*$`, "m");
     let updated = false;
 
@@ -501,6 +539,7 @@ export class CodexCliRuntimeService {
       this.persistedConfig = {
         apiBaseUrl: typeof parsed.apiBaseUrl === "string" ? parsed.apiBaseUrl.trim() : "",
         apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : "",
+        workspaceRoot: this.normalizeWorkspaceRoot(parsed.workspaceRoot, { allowEmpty: true, validateExists: false }),
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
         apiProbePassed: parsed.apiProbePassed === true,
         apiProbeCheckedAt: typeof parsed.apiProbeCheckedAt === "string" ? parsed.apiProbeCheckedAt : "",
@@ -511,6 +550,7 @@ export class CodexCliRuntimeService {
       this.persistedConfig = {
         apiBaseUrl: "",
         apiKey: "",
+        workspaceRoot: "",
         updatedAt: "",
         apiProbePassed: false,
         apiProbeCheckedAt: "",
@@ -719,6 +759,13 @@ export class CodexCliRuntimeService {
   }
 
   private readProjectTrustInfo() {
+    const workspaceRoot = this.getWorkspaceRoot();
+    if (!workspaceRoot) {
+      return {
+        trusted: false,
+        level: null as string | null
+      };
+    }
     const configPath = this.resolveCodexConfigPath();
     if (!existsSync(configPath)) {
       return {
@@ -729,7 +776,7 @@ export class CodexCliRuntimeService {
 
     try {
       const content = readFileSync(configPath, "utf8");
-      const sectionHeader = `[projects."${this.escapeTomlString(this.projectRoot)}"]`;
+      const sectionHeader = `[projects."${this.escapeTomlString(workspaceRoot)}"]`;
       const lines = content.split(/\r?\n/);
       let inTargetSection = false;
       let level: string | null = null;
@@ -855,11 +902,18 @@ export class CodexCliRuntimeService {
   }
 
   private buildSetupWizard(input: { apiUsable: boolean }) {
+    const workspaceDone = Boolean(this.getWorkspaceRoot());
     const installDone = this.runtimeSnapshot.installed;
     const trustDone = this.runtimeSnapshot.trustedInConfig;
     const apiDone = input.apiUsable;
 
     const steps = [
+      {
+        id: "configure_workspace_root",
+        title: "设置工作区主目录",
+        description: "在系统配置中填写工作区主目录，作为网关任务默认执行目录",
+        completed: workspaceDone
+      },
       {
         id: "install_cli",
         title: "安装 Codex CLI",
@@ -869,8 +923,8 @@ export class CodexCliRuntimeService {
       {
         id: "authorize_project",
         title: "授权当前项目目录",
-        description: "点击“授权当前目录”，写入 trusted 配置",
-        completed: trustDone
+        description: workspaceDone ? "点击“授权当前目录”，写入 trusted 配置" : "请先设置工作区主目录，再执行目录授权",
+        completed: workspaceDone && trustDone
       },
       {
         id: "configure_api",
@@ -904,6 +958,15 @@ export class CodexCliRuntimeService {
     const apiKey = input.apiKey.trim();
 
     this.refreshRuntimeSnapshot();
+    const workspaceRoot = this.getWorkspaceRoot();
+    if (!workspaceRoot) {
+      return {
+        success: false,
+        checkedAt,
+        message: "工作区主目录未设置，无法执行 Codex 可用性探测",
+        target: ""
+      };
+    }
     const codexCommand = this.runtimeSnapshot.resolvedCodexBin || this.codexBin;
     if (!this.runtimeSnapshot.installed) {
       return {
@@ -930,7 +993,7 @@ export class CodexCliRuntimeService {
 
     const result = await new Promise<{ exitCode: number; stdout: string; stderr: string; timeout: boolean }>((resolvePromise) => {
       const child = spawn(spawnInvocation.command, spawnInvocation.args, {
-        cwd: this.projectRoot,
+        cwd: workspaceRoot,
         env: probeEnv,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: process.platform === "win32"
@@ -1025,9 +1088,56 @@ export class CodexCliRuntimeService {
       return homeCandidate;
     }
 
-    const fallback = resolve(this.projectRoot, "data", "codex-home");
+    const fallback = resolve(this.bootstrapProjectRoot, "data", "codex-home");
     this.ensureDirectoryWritable(fallback);
     return fallback;
+  }
+
+  getWorkspaceRoot() {
+    const normalized = this.normalizeWorkspaceRoot(this.persistedConfig.workspaceRoot, {
+      allowEmpty: true,
+      validateExists: false
+    });
+    if (!normalized) {
+      return null;
+    }
+    return this.isDirectory(normalized) ? normalized : null;
+  }
+
+  private normalizeWorkspaceRoot(
+    input: string | null | undefined,
+    options: {
+      allowEmpty?: boolean;
+      validateExists?: boolean;
+    } = {}
+  ) {
+    const text = String(input || "").trim();
+    if (!text) {
+      if (options.allowEmpty) {
+        return "";
+      }
+      throw new AppError("WORKSPACE_ROOT_REQUIRED", 400, "Workspace root cannot be empty");
+    }
+
+    const homeDir =
+      process.env.HOME?.trim() ||
+      process.env.USERPROFILE?.trim() ||
+      `${process.env.HOMEDRIVE || ""}${process.env.HOMEPATH || ""}`.trim();
+    const expandedHome =
+      (text.startsWith("~/") || text.startsWith("~\\")) && homeDir ? resolve(homeDir, text.slice(2)) : text;
+    const candidate = isAbsolute(expandedHome) ? expandedHome : resolve(this.bootstrapProjectRoot, expandedHome);
+    if (options.validateExists !== false && !this.isDirectory(candidate)) {
+      throw new AppError("WORKSPACE_ROOT_INVALID", 400, `Workspace root does not exist or is not a directory: ${candidate}`);
+    }
+    return candidate;
+  }
+
+  private isDirectory(path: string) {
+    try {
+      return statSync(path).isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   private ensureDirectoryWritable(path: string) {

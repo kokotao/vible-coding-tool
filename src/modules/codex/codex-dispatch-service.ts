@@ -391,9 +391,13 @@ export class CodexDispatchService {
   }
 
   private resolveWorkingDirectory(projectPath: string | null) {
+    const workspaceRoot = this.deps.codexCliRuntimeService.getWorkspaceRoot();
     const normalized = (projectPath || "").trim();
     if (!normalized) {
-      return process.cwd();
+      if (!workspaceRoot || !this.isDirectory(workspaceRoot)) {
+        return null;
+      }
+      return workspaceRoot;
     }
 
     const homeDir =
@@ -404,7 +408,8 @@ export class CodexDispatchService {
       (normalized.startsWith("~/") || normalized.startsWith("~\\")) && homeDir
         ? resolve(homeDir, normalized.slice(2))
         : normalized;
-    const candidate = isAbsolute(expandedHome) ? expandedHome : resolve(process.cwd(), expandedHome);
+    const baseRoot = workspaceRoot || process.cwd();
+    const candidate = isAbsolute(expandedHome) ? expandedHome : resolve(baseRoot, expandedHome);
     if (!this.isDirectory(candidate)) {
       return null;
     }

@@ -103,13 +103,34 @@ function decodeFeishuMessageContent(raw: string | undefined) {
       .filter(Boolean);
 
     return {
-      text: parsed.text ?? "",
+      text: stripFeishuMentions(parsed.text ?? ""),
       hasMentionTag: /<at\b/i.test(parsed.text ?? ""),
       mentionOpenIds
     };
   } catch {
     return fallback;
   }
+}
+
+function stripFeishuMentions(text: string) {
+  if (!text) {
+    return "";
+  }
+
+  const removedAtTags = text
+    .replace(/<at\b[^>]*>[\s\S]*?<\/at>/gi, " ")
+    .replace(/<at\b[^>]*\/>/gi, " ");
+  let remaining = removedAtTags.trim();
+
+  for (let index = 0; index < 5; index += 1) {
+    const matched = remaining.match(/^@([^\s:：,，;；、]+)(?:[\s:：,，;；、]+)([\s\S]*)$/u);
+    if (!matched) {
+      break;
+    }
+    remaining = matched[2].trimStart();
+  }
+
+  return remaining.trim();
 }
 
 function verifyFeishuToken(

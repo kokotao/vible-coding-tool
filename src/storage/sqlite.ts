@@ -30,6 +30,7 @@ export function migrateDatabase(db: SqliteDatabase) {
   ensureAuditLogTaskIdColumn(db);
   ensureFeishuPanelContextColumns(db);
   ensureFeishuSessionRoutesTable(db);
+  ensureAuditLogIndexes(db);
 }
 
 function ensureAuditLogTaskIdColumn(db: SqliteDatabase) {
@@ -69,5 +70,12 @@ function ensureFeishuSessionRoutesTable(db: SqliteDatabase) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
+  `);
+}
+
+function ensureAuditLogIndexes(db: SqliteDatabase) {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_task_created_id
+      ON audit_logs(task_id, created_at ASC, id ASC)
   `);
 }

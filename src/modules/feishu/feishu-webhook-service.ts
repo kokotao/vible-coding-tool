@@ -109,7 +109,8 @@ export class FeishuWebhookService {
           message,
           parsed,
           panelContext.selectedModelSlug ?? null,
-          panelContext.selectedReasoningLevel ?? null
+          panelContext.selectedReasoningLevel ?? null,
+          panelContext.selectedProjectPath ?? null
         );
       }
 
@@ -137,7 +138,8 @@ export class FeishuWebhookService {
           message,
           parsed,
           panelContext.selectedModelSlug ?? null,
-          panelContext.selectedReasoningLevel ?? null
+          panelContext.selectedReasoningLevel ?? null,
+          panelContext.selectedProjectPath ?? null
         );
       }
 
@@ -186,7 +188,8 @@ export class FeishuWebhookService {
           message,
           parsed,
           panelContext.selectedModelSlug ?? null,
-          panelContext.selectedReasoningLevel ?? null
+          panelContext.selectedReasoningLevel ?? null,
+          panelContext.selectedProjectPath ?? null
         );
       }
 
@@ -213,7 +216,8 @@ export class FeishuWebhookService {
       message,
       parsed,
       panelContext?.selectedModelSlug ?? null,
-      panelContext?.selectedReasoningLevel ?? null
+      panelContext?.selectedReasoningLevel ?? null,
+      panelContext?.selectedProjectPath ?? null
     );
   }
 
@@ -409,7 +413,8 @@ export class FeishuWebhookService {
         message,
         parsed,
         context.selectedModelSlug ?? null,
-        context.selectedReasoningLevel ?? null
+        context.selectedReasoningLevel ?? null,
+        context.selectedProjectPath ?? null
       );
     }
 
@@ -672,7 +677,7 @@ export class FeishuWebhookService {
             threadRef,
             modelSlug: selectedModelSlug,
             modelReasoningLevel: selectedReasoningLevel,
-            projectPath: parsed.newSession ? selectedProjectPath : null
+            projectPath: selectedProjectPath
           });
 
     this.deps.feishuCommandPanelService?.clearComposeMode(parsed.senderId);

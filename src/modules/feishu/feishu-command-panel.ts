@@ -62,10 +62,10 @@ export type FeishuPanelGatewayStatus = {
 };
 
 const PANEL_ACTION_PATTERN = /^(查看|列出|展示)?(项目|session|会话|线程|模型|网关|状态|当前选择|帮助)(列表|状态)?$/i;
-const PANEL_VIEW_PROJECTS_BY_PATH_PATTERN = /^(查看|列出|展示|选择)?项目路径[：:]\s*(.+)$/i;
-const PANEL_SELECT_PROJECT_PATTERN = /^(选择|切换|使用)项目[：:]\s*(.+)$/i;
-const PANEL_SELECT_SESSION_PATTERN = /^(选择|切换|使用)(session|会话|线程)[：:]\s*(.+)$/i;
-const PANEL_SELECT_MODEL_PATTERN = /^(选择|切换|使用)模型[：:]\s*(.+)$/i;
+const PANEL_VIEW_PROJECTS_BY_PATH_PATTERN = /^(查看|列出|展示|选择)?项目路径(?:[：:]\s*|\s+)(.+)$/i;
+const PANEL_SELECT_PROJECT_PATTERN = /^(选择|切换|使用)项目(?:[：:]\s*|\s+)(.+)$/i;
+const PANEL_SELECT_SESSION_PATTERN = /^(选择|切换|使用)(session|会话|线程)(?:[：:]\s*|\s+)(.+)$/i;
+const PANEL_SELECT_MODEL_PATTERN = /^(选择|切换|使用)模型(?:[：:]\s*|\s+)(.+)$/i;
 const PANEL_START_TASK_PATTERN = /^(开始任务|继续|执行任务|在当前\s*session\s*继续)[：:]\s*(.+)$/i;
 const PANEL_COMPOSE_SESSION_PATTERN = /^(会话指令|会话模式|使用会话指令)$/i;
 const PANEL_COMPOSE_THREAD_PATTERN = /^(线程定向|线程模式|使用线程定向)$/i;

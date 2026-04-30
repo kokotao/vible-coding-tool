@@ -36,7 +36,8 @@ const state = {
     systemStatus: null,
     systemDraft: {
       apiBaseUrl: "",
-      apiKey: ""
+      apiKey: "",
+      workspaceRoot: ""
     }
   },
   setupWizard: {
@@ -53,92 +54,14 @@ let i18nObserver = null;
 let localizeInProgress = false;
 
 const EN_TRANSLATIONS = Object.freeze({
-  "任务驾驶舱与连接中心": "Task Cockpit & Connection Hub",
-  "机器人消息仍然是主交互面，这个页面集中展示任务、会话、风控和连接状态，网页端承接少量补位操作。":
+  "Task Cockpit & Connection Hub": "Task Cockpit & Connection Hub",
+  "Robot messaging is still the primary interaction. This page centralizes tasks, sessions, risk checks, and connector status, with web as a fallback workspace.":
     "Robot messaging is still the primary interaction. This page centralizes tasks, sessions, risk checks, and connector status, with web as a fallback workspace.",
-  "系统运行中": "System Running",
-  "首页总览": "Dashboard",
-  "本地会话页": "Local Sessions",
-  "系统配置": "System Settings",
-  "健康检查": "Health Check",
-  "实时任务时间线": "Live Task Timeline",
-  "优先展示系统正在执行什么，快速下钻到任务详情。":
-    "Prioritize what is currently running and jump to task details quickly.",
-  "Codex 左侧接管总览（24h）": "Codex Left-Side Overview (24h)",
-  "更新时间：": "Updated:",
-  "活跃任务": "Active Tasks",
-  "最近会话": "Recent Sessions",
-  "风险待确认": "Pending Risk Confirmations",
-  "主确认链路优先在飞书 / QQ，网页端做补位确认。":
-    "Primary confirmation should happen in Feishu / QQ, with web as fallback.",
-  "连接中心": "Connection Hub",
-  "这里是首页级操作区，不只是状态面板。":
-    "This is an operational area, not just a status panel.",
-  "本地会话目录": "Local Session Directory",
-  "打开目录页": "Open Directory Page",
-  "扫描时间：": "Scanned At:",
-  "最近活跃会话": "Recently Active Sessions",
-  "展示标题优先，sessionId 在详情中可见。": "Titles first; sessionId is shown in details.",
-  "进行中任务": "Running Tasks",
-  "待确认风险": "Pending Risks",
-  "活跃会话": "Active Sessions",
-  "今日失败": "Failed Today",
-  "查看任务": "View Task",
-  "停止任务": "Stop Task",
-  "处理中": "Processing",
-  "当前暂无任务事件。等飞书或 QQ 指令进入网关后，这里会滚动更新。":
-    "No task events yet. This feed updates when Feishu or QQ commands enter the gateway.",
-  "无风险说明": "No risk description",
-  "发起人：": "Requested By:",
-  "当前没有待确认风险": "No pending risks right now",
-  "大部分确认动作优先在飞书 / QQ 消息里完成。":
-    "Most confirmations should still be completed in Feishu / QQ.",
-  "尚未绑定默认群 / 频道": "No default group/channel bound",
-  "接入模式：": "Mode:",
-  "最近联调：": "Last Test:",
-  "已可用于机器人消息链路": "Ready for bot messaging flow",
-  "未完成接入": "Setup incomplete",
-  "编辑配置": "Edit Config",
-  "暂无连接器配置。": "No connector configuration yet.",
-  "暂无本地会话目录数据。": "No local session directory data yet.",
-  "暂无消息": "No message yet",
-  "暂无活跃会话。": "No active sessions.",
-  "Codex 总览暂不可用：": "Codex overview is unavailable:",
-  "暂无摘要": "No summary yet",
-  "任务详情": "Task Detail",
-  "事件流": "Event Stream",
-  "近 24 小时没有进行中的 Codex 任务。": "No running Codex tasks in the last 24 hours.",
-  "近 24 小时没有 Codex 会话更新。": "No Codex session updates in the last 24 hours.",
-  "首页数据暂不可用，请稍后刷新。": "Dashboard data is unavailable. Please refresh later.",
-  "本地会话工作台": "Local Session Workspace",
-  "按项目聚合本地 Codex 会话，快速查看历史对话、上下文与工具调用记录。":
-    "Group local Codex sessions by project to quickly inspect history, context, and tool calls.",
-  "返回首页": "Back to Dashboard",
-  "刷新扫描": "Refresh Scan",
-  "刷新目录": "Refresh Directory",
-  "项目目录": "Project Directory",
-  "搜索项目名称或路径": "Search project name or path",
-  "全部项目": "All Projects",
-  "未选择项目": "No project selected",
-  "搜索会话标题": "Search session title",
-  "会话日期": "Session Date",
-  "暂无可选日期": "No available dates",
-  "当前条件下没有会话。": "No sessions match current filters.",
-  "选择会话后显示详细聊天内容。": "Select a session to view detailed chat content.",
-  "会话详情加载失败：": "Failed to load session detail:",
-  "工具调用": "Tool Calls",
-  "元数据": "Metadata",
-  "刷新当前对话": "Refresh Current Chat",
-  "会话信息": "Session Info",
-  "没有匹配到项目。": "No matching projects.",
-  "没有可展示的聊天内容。": "No chat content to display.",
-  "当前会话没有普通对话消息，仅包含工具调用记录。": "This session has no normal chat messages, only tool call records.",
-  "没有工具调用记录。": "No tool call records.",
-  "未识别到文件路径记录。": "No file path records recognized.",
-  "请选择日期": "Please select a date",
-  "工具调用与返回 ": "Tool calls and returns: ",
-  "工具返回": "Tool Return",
-  "工具调用": "Tool Call"
+  "System Running": "System Running",
+  "Dashboard": "Dashboard",
+  "Local Sessions": "Local Sessions",
+  "System Settings": "System Settings",
+  "Health Check": "Health Check"
 });
 
 const EN_TRANSLATION_PAIRS = Object.entries(EN_TRANSLATIONS).sort((left, right) => right[0].length - left[0].length);
@@ -566,7 +489,8 @@ function isSetupWizardRequired(status) {
     return status.setupWizard.required;
   }
   const apiReady = Boolean(status.apiConfig?.baseUrl) && Boolean(status.apiConfig?.keyConfigured);
-  return !status.installed || !apiReady || !status.projectAuthorization?.trustedInConfig;
+  const workspaceReady = Boolean(status.workspaceConfigured && status.workspaceRoot);
+  return !status.installed || !apiReady || !workspaceReady || !status.projectAuthorization?.trustedInConfig;
 }
 
 function setupWizardDismissKey(status) {
@@ -607,7 +531,10 @@ function renderShell(title, subtitle, actionsHtml, contentHtml) {
     <div class="shell">
       <section class="hero">
         <div>
-          <div class="hero-badge">vible coding mission control</div>
+          <div class="hero-brand">
+            <img class="hero-logo" src="/branding/lingxiqiao-logo-final-transparent.png" alt="\u7075\u7280\u6865 Logo" />
+            <div class="hero-badge">\u7075\u7280\u6865\uff08Lingxi Bridge\uff09 mission control</div>
+          </div>
           <h1>${title}</h1>
           <p>${subtitle}</p>
         </div>
@@ -1064,9 +991,16 @@ function renderDashboardPage() {
       <div class="mc-orb mc-orb-b"></div>
       <header class="mc-topbar">
         <div class="mc-title-wrap">
-          <h1>任务驾驶舱与连接中心</h1>
-          <div class="mc-title-sub">MISSION CONTROL & CONNECTION CENTER</div>
-          <p>机器人消息仍然是主交互面，这个页面集中展示任务、会话、风控和连接状态，网页端承接少量补位操作。</p>
+          <div class="mc-brand">
+            <img class="mc-brand-logo" src="/branding/lingxiqiao-logo-final-transparent.png" alt="灵犀桥 Logo" />
+            <div class="mc-brand-copy">
+              <div class="mc-brand-name">灵犀桥</div>
+              <div class="mc-brand-tag">Lingxi Bridge · Vibe Coding Gateway</div>
+            </div>
+          </div>
+          <h1>任务编排与连接中枢</h1>
+          <div class="mc-title-sub">MISSION ORCHESTRATION & CONNECTION HUB</div>
+          <p>灵犀桥承接机器人消息、任务编排、风险确认与连接状态，网页端用于补位查看与管理。</p>
         </div>
         <div class="mc-head-side">
           <div class="mc-runtime">
@@ -2209,7 +2143,8 @@ async function openConnectorDrawer(platform) {
     systemStatus: null,
     systemDraft: {
       apiBaseUrl: "",
-      apiKey: ""
+      apiKey: "",
+      workspaceRoot: ""
     }
   };
   renderDrawer();
@@ -2227,7 +2162,8 @@ async function openSystemConfigDrawer() {
     systemStatus: status,
     systemDraft: {
       apiBaseUrl: status.apiConfig?.baseUrl || "",
-      apiKey: ""
+      apiKey: "",
+      workspaceRoot: status.workspaceRoot || ""
     }
   };
   renderDrawer();
@@ -2263,6 +2199,8 @@ function renderSetupWizard() {
 
   const steps = status.setupWizard?.steps || [];
   const quickCommands = status.setupWizard?.quickCommands || [];
+  const draftWorkspaceRoot = state.drawer.systemDraft.workspaceRoot || status.workspaceRoot || "";
+  const workspaceConfigured = Boolean(status.workspaceConfigured && status.workspaceRoot);
 
   wizardRoot.innerHTML = `
     <div class="wizard-backdrop" data-close-setup-wizard="true">
@@ -2270,7 +2208,7 @@ function renderSetupWizard() {
         <div class="panel-head">
           <div>
             <h2>首次安装配置向导</h2>
-            <p>检测到当前设备尚未完成网关初始化，按以下步骤完成后即可开始任务分发。</p>
+            <p>请先设置工作区主目录，系统不会再默认使用启动目录。</p>
           </div>
           <button class="button small" data-close-setup-wizard="true">稍后处理</button>
         </div>
@@ -2279,6 +2217,15 @@ function renderSetupWizard() {
             <div><strong>当前状态：</strong>${escapeHtml(status.installed ? "CLI 已安装" : "CLI 未安装")} ${escapeHtml(status.version || "")}</div>
             <div><strong>系统入口：</strong><a href="/?drawer=system">系统配置抽屉</a></div>
           </div>
+          <div class="field">
+            <label>工作区主目录</label>
+            <input name="setupWorkspaceRoot" value="${escapeHtml(draftWorkspaceRoot)}" placeholder="e.g. D:\\WorkSpace\\Projects" />
+          </div>
+          <div class="drawer-actions">
+            <button class="button" data-setup-browse-workspace="true">浏览目录</button>
+            <button class="button primary" data-setup-save-workspace="true">保存工作区目录</button>
+          </div>
+          <div class="inline-note">未设置工作区目录时，向导将持续提示。</div>
           <div class="setup-steps">
             ${steps
               .map(
@@ -2317,7 +2264,7 @@ function renderSetupWizard() {
           }
           <div class="drawer-actions">
             <button class="button" data-setup-open-system="true">打开系统配置</button>
-            <button class="button" data-setup-authorize="true">授权当前目录</button>
+            <button class="button" data-setup-authorize="true" ${workspaceConfigured ? "" : "disabled"}>授权当前目录</button>
             <button class="button primary" data-setup-install="true" ${status.installed ? "disabled" : ""}>安装 Codex CLI</button>
             <button class="button subtle" data-setup-refresh="true">刷新状态</button>
           </div>
@@ -2349,12 +2296,67 @@ function renderSetupWizard() {
     });
   });
 
+  wizardRoot.querySelector("[name='setupWorkspaceRoot']")?.addEventListener("input", (event) => {
+    state.drawer.systemDraft.workspaceRoot = String(event.target?.value || "").trim();
+  });
+  wizardRoot.querySelector("[data-setup-browse-workspace='true']")?.addEventListener("click", browseWorkspaceFromSetupWizard);
+  wizardRoot.querySelector("[data-setup-save-workspace='true']")?.addEventListener("click", saveWorkspaceFromSetupWizard);
   wizardRoot.querySelector("[data-setup-open-system='true']")?.addEventListener("click", async () => {
     await openSystemConfigDrawer();
   });
   wizardRoot.querySelector("[data-setup-refresh='true']")?.addEventListener("click", refreshSetupWizardStatus);
   wizardRoot.querySelector("[data-setup-authorize='true']")?.addEventListener("click", authorizeFromSetupWizard);
   wizardRoot.querySelector("[data-setup-install='true']")?.addEventListener("click", installFromSetupWizard);
+}
+
+async function browseWorkspaceFromSetupWizard() {
+  const startPath = state.drawer.systemDraft.workspaceRoot || state.setupWizard.status?.workspaceRoot || "";
+  try {
+    const result = await fetchJson("/api/system/workspace-root/pick", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ startPath })
+    });
+
+    const selectedPath = String(result.path || "").trim();
+    if (!selectedPath) {
+      return;
+    }
+
+    state.drawer.systemDraft.workspaceRoot = selectedPath;
+    const field = wizardRoot?.querySelector("[name='setupWorkspaceRoot']");
+    if (field) {
+      field.value = selectedPath;
+    }
+  } catch (error) {
+    if (error?.code === "DIRECTORY_PICKER_CANCELLED") {
+      return;
+    }
+    showToast(error.message, "error");
+  }
+}
+
+async function saveWorkspaceFromSetupWizard() {
+  const fieldValue = wizardRoot?.querySelector("[name='setupWorkspaceRoot']")?.value || state.drawer.systemDraft.workspaceRoot || "";
+  const workspaceRoot = String(fieldValue).trim();
+  if (!workspaceRoot) {
+    showToast("请先填写工作区主目录", "error");
+    return;
+  }
+
+  try {
+    const status = await fetchJson("/api/system/codex-cli/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceRoot })
+    });
+
+    state.drawer.systemDraft.workspaceRoot = status.workspaceRoot || workspaceRoot;
+    syncSetupWizardStatus(status);
+    showToast("工作区目录已保存", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
 }
 
 function syncSetupWizardStatus(status) {
@@ -2463,36 +2465,32 @@ function renderSystemDrawer() {
         <div class="panel-head">
           <div>
             <h2>系统配置</h2>
-            <p>启动初始化、Codex CLI 安装检测、项目目录授权与 Codex CLI 命令探测。</p>
+            <p>设置工作区主目录、Codex CLI 安装检测与项目目录授权。</p>
           </div>
           <button class="button small" data-close-drawer="true">关闭</button>
         </div>
         <div class="form-grid">
           <div class="inline-note">
-            <div><strong>CLI 状态：</strong>${escapeHtml(status.installed ? "已安装" : "未安装")} ${escapeHtml(
-              status.version || ""
-            )}</div>
+            <div><strong>CLI 状态：</strong>${escapeHtml(status.installed ? "已安装" : "未安装")} ${escapeHtml(status.version || "")}</div>
             <div><strong>CLI 命令：</strong>${escapeHtml(status.codexBin || "codex")}</div>
             <div><strong>实际 CLI：</strong>${escapeHtml(resolvedCli)}</div>
             <div><strong>项目目录：</strong>${escapeHtml(status.projectRoot || "-")}</div>
+            <div><strong>工作区目录：</strong>${escapeHtml(status.workspaceRoot || "未设置")}</div>
             <div><strong>会话扫描：</strong>${escapeHtml(sessionScanLabel)} ${status.sessionScan?.scannedAt ? `· ${escapeHtml(status.sessionScan.scannedAt)}` : ""}</div>
             <div><strong>目录授权：</strong>${status.projectAuthorization?.trustedInConfig ? "已写入 trusted" : "运行时 full-access 授权"}</div>
-            <div><strong>Codex CLI 命令探测：</strong>${escapeHtml(apiProbeLabel)} ${status.apiConfig?.probeCheckedAt ? `· ${escapeHtml(status.apiConfig.probeCheckedAt)}` : ""}</div>
+            <div><strong>API 探测：</strong>${escapeHtml(apiProbeLabel)} ${status.apiConfig?.probeCheckedAt ? `· ${escapeHtml(status.apiConfig.probeCheckedAt)}` : ""}</div>
             ${apiProbeMessage ? `<div><strong>探测结果：</strong>${escapeHtml(apiProbeMessage)}</div>` : ""}
             <div><strong>执行策略：</strong>${escapeHtml(status.dispatchCommandPreview || "-")}</div>
-            ${
-              detectionMessage
-                ? `<div><strong>检测提示：</strong>${escapeHtml(detectionMessage)}</div>`
-                : ""
-            }
-            ${
-              quickCommands.length
-                ? `<div><strong>快捷命令：</strong>${quickCommands.map((command) => `<code>${escapeHtml(command)}</code>`).join(" / ")}</div>`
-                : ""
-            }
-            <div><strong>快捷入口：</strong><a href="/?drawer=system">打开系统配置抽屉</a></div>
+            ${detectionMessage ? `<div><strong>检测提示：</strong>${escapeHtml(detectionMessage)}</div>` : ""}
+            ${quickCommands.length ? `<div><strong>快捷命令：</strong>${quickCommands.map((command) => `<code>${escapeHtml(command)}</code>`).join(" / ")}</div>` : ""}
+          </div>
+          <div class="field">
+            <label>工作区主目录</label>
+            <input name="systemWorkspaceRoot" value="${escapeHtml(state.drawer.systemDraft.workspaceRoot || status.workspaceRoot || "")}" placeholder="e.g. D:\\WorkSpace\\Projects" />
           </div>
           <div class="drawer-actions">
+            <button class="button" data-system-browse-workspace="true">浏览目录</button>
+            <button class="button primary" data-system-save="true">保存系统配置</button>
             <button class="button" data-system-install="true" ${status.installed ? "disabled" : ""}>${escapeHtml(installButtonLabel)}</button>
             <button class="button" data-system-authorize="true">授权当前目录</button>
             <button class="button subtle" data-system-refresh="true">刷新状态</button>
@@ -2667,9 +2665,70 @@ function bindDrawerFormEvents() {
 }
 
 function bindSystemDrawerFormEvents() {
+  drawerRoot.querySelector("[name='systemWorkspaceRoot']")?.addEventListener("input", syncSystemDraftFromForm);
+  drawerRoot.querySelector("[data-system-save='true']")?.addEventListener("click", saveSystemConfigFromDrawer);
+  drawerRoot.querySelector("[data-system-browse-workspace='true']")?.addEventListener("click", pickWorkspaceFromSystemDrawer);
   drawerRoot.querySelector("[data-system-install='true']")?.addEventListener("click", installCodexCliFromDrawer);
   drawerRoot.querySelector("[data-system-refresh='true']")?.addEventListener("click", refreshSystemStatusInDrawer);
   drawerRoot.querySelector("[data-system-authorize='true']")?.addEventListener("click", authorizeProjectFromDrawer);
+}
+
+function syncSystemDraftFromForm() {
+  const workspaceRoot = drawerRoot.querySelector("[name='systemWorkspaceRoot']")?.value || "";
+  state.drawer.systemDraft.workspaceRoot = String(workspaceRoot).trim();
+}
+
+async function saveSystemConfigFromDrawer() {
+  syncSystemDraftFromForm();
+  const workspaceRoot = state.drawer.systemDraft.workspaceRoot;
+  if (!workspaceRoot) {
+    showToast("请先设置工作区主目录", "error");
+    return;
+  }
+
+  try {
+    const status = await fetchJson("/api/system/codex-cli/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceRoot })
+    });
+    state.drawer.systemStatus = status;
+    state.drawer.systemDraft.workspaceRoot = status.workspaceRoot || workspaceRoot;
+    syncSetupWizardStatus(status);
+    renderDrawer();
+    showToast("工作区目录已保存", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function pickWorkspaceFromSystemDrawer() {
+  syncSystemDraftFromForm();
+  const startPath = state.drawer.systemDraft.workspaceRoot || state.drawer.systemStatus?.workspaceRoot || "";
+
+  try {
+    const result = await fetchJson("/api/system/workspace-root/pick", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ startPath })
+    });
+
+    const selectedPath = String(result.path || "").trim();
+    if (!selectedPath) {
+      return;
+    }
+
+    state.drawer.systemDraft.workspaceRoot = selectedPath;
+    const field = drawerRoot.querySelector("[name='systemWorkspaceRoot']");
+    if (field) {
+      field.value = selectedPath;
+    }
+  } catch (error) {
+    if (error?.code === "DIRECTORY_PICKER_CANCELLED") {
+      return;
+    }
+    showToast(error.message, "error");
+  }
 }
 
 function syncDrawerConfigFromForm() {
@@ -2863,6 +2922,7 @@ async function refreshSystemStatusInDrawer() {
     syncSetupWizardStatus(state.drawer.systemStatus);
     const currentBaseUrl = state.drawer.systemStatus?.apiConfig?.baseUrl || "";
     state.drawer.systemDraft.apiBaseUrl = currentBaseUrl;
+    state.drawer.systemDraft.workspaceRoot = state.drawer.systemStatus?.workspaceRoot || "";
     renderDrawer();
     showToast("系统状态已刷新", "success");
   } catch (error) {

@@ -2,7 +2,7 @@
   "name": "@tauchun/viblect",
   "version": "0.1.6",
   "private": false,
-  "description": "Gateway service between vibe coding tools and IM bots.",
+  "description": "灵犀桥：连接 Vibe Coding 工具与 IM 机器人的双向智能网关服务。",
   "bin": {
     "vct": "bin/vible-gateway.js",
     "viblect": "bin/vible-gateway.js",
