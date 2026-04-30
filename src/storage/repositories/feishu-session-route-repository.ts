@@ -8,10 +8,11 @@ import type { SqliteDatabase } from "../sqlite";
 
 export type FeishuSessionRouteChatType = "p2p" | "group";
 export type FeishuSessionRouteStatus = "active" | "invalid";
+export type SessionRoutePlatform = "feishu" | "qq";
 
 export type FeishuSessionRouteRecord = {
   sessionId: string;
-  sourcePlatform: "feishu";
+  sourcePlatform: SessionRoutePlatform;
   chatType: FeishuSessionRouteChatType;
   chatId: string | null;
   senderOpenId: string;
@@ -70,11 +71,25 @@ export class FeishuSessionRouteRepository {
   }
 
   findLatestSessionIdBySenderAndChat(input: { senderOpenId: string; chatType: FeishuSessionRouteChatType; chatId?: string | null }) {
+    return this.findLatestSessionIdBySenderAndChatForPlatform({
+      sourcePlatform: "feishu",
+      senderOpenId: input.senderOpenId,
+      chatType: input.chatType,
+      chatId: input.chatId
+    });
+  }
+
+  findLatestSessionIdBySenderAndChatForPlatform(input: {
+    sourcePlatform: SessionRoutePlatform;
+    senderOpenId: string;
+    chatType: FeishuSessionRouteChatType;
+    chatId?: string | null;
+  }) {
     if (input.chatType === "group") {
       const statement = this.db.prepare(`
         SELECT session_id AS sessionId
         FROM feishu_session_routes
-        WHERE source_platform = 'feishu'
+        WHERE source_platform = ?
           AND route_status = 'active'
           AND sender_open_id = ?
           AND chat_type = 'group'
@@ -83,21 +98,25 @@ export class FeishuSessionRouteRepository {
         LIMIT 1
       `);
 
-      const row = statement.get(input.senderOpenId.trim(), (input.chatId || "").trim()) as { sessionId: string } | undefined;
+      const row = statement.get(
+        input.sourcePlatform,
+        input.senderOpenId.trim(),
+        (input.chatId || "").trim()
+      ) as { sessionId: string } | undefined;
       return row?.sessionId ?? null;
     }
 
     const statement = this.db.prepare(`
       SELECT session_id AS sessionId
       FROM feishu_session_routes
-      WHERE source_platform = 'feishu'
+      WHERE source_platform = ?
         AND route_status = 'active'
         AND sender_open_id = ?
         AND chat_type = 'p2p'
       ORDER BY updated_at DESC, id DESC
       LIMIT 1
     `);
-    const row = statement.get(input.senderOpenId.trim()) as { sessionId: string } | undefined;
+    const row = statement.get(input.sourcePlatform, input.senderOpenId.trim()) as { sessionId: string } | undefined;
     return row?.sessionId ?? null;
   }
 

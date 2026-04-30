@@ -64,7 +64,8 @@ export class ConnectorConfigService {
 
   testConnection(platform: ConnectorPlatform) {
     const existing = this.getConfig(platform);
-    const isSuccess = existing.appId.trim().length > 0 && existing.appSecret.trim().length > 0;
+    const validation = this.validateConnectionConfig(platform, existing);
+    const isSuccess = validation.success;
     const now = new Date().toISOString();
 
     const updated = this.repository.upsert({
@@ -78,9 +79,37 @@ export class ConnectorConfigService {
     return {
       platform: updated.platform,
       success: isSuccess,
-      message: isSuccess ? "Connection test passed" : "Missing App ID or App Secret",
+      message: validation.message,
       lastTestAt: updated.lastTestAt,
       lastTestResult: updated.lastTestResult
+    };
+  }
+
+  private validateConnectionConfig(platform: ConnectorPlatform, config: ConnectorConfigRecord) {
+    if (!config.appId.trim() || !config.appSecret.trim()) {
+      return {
+        success: false,
+        message: "Missing App ID or App Secret"
+      };
+    }
+
+    if (platform !== "qq") {
+      return {
+        success: true,
+        message: "Connection test passed"
+      };
+    }
+
+    if (config.eventMode === "websocket") {
+      return {
+        success: true,
+        message: "Connection test passed (QQ websocket mode)"
+      };
+    }
+
+    return {
+      success: true,
+      message: "Connection test passed (QQ webhook mode)"
     };
   }
 }

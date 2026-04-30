@@ -21,7 +21,9 @@ import { FeishuIdentityService } from "./modules/feishu/feishu-identity-service"
 import { FeishuDirectoryService } from "./modules/feishu/feishu-directory-service";
 import { FeishuWebhookService } from "./modules/feishu/feishu-webhook-service";
 import { FeishuOutboundNotifier } from "./modules/notifications/feishu-outbound-notifier";
+import { QqOutboundNotifier } from "./modules/notifications/qq-outbound-notifier";
 import { LightOpsService } from "./modules/ops/light-ops-service";
+import { QqWebhookService } from "./modules/qq/qq-webhook-service";
 import { SessionQueryService } from "./modules/sessions/session-query-service";
 import { TaskQueryService } from "./modules/tasks/task-query-service";
 import { registerCodexRoutes } from "./routes/codex";
@@ -29,6 +31,7 @@ import { registerConnectorRoutes } from "./routes/connectors";
 import { registerDashboardRoutes } from "./routes/dashboard";
 import { registerFeishuRoutes } from "./routes/feishu";
 import { registerHealthRoute } from "./routes/health";
+import { registerQqRoutes } from "./routes/qq";
 import { registerRiskRoutes } from "./routes/risks";
 import { registerSessionRoutes } from "./routes/sessions";
 import { registerSystemRoutes } from "./routes/system";
@@ -85,6 +88,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     idempotencyRepository,
     feishuIdentityRepository
   });
+  const qqNotifier = new QqOutboundNotifier(connectorConfigService, {
+    fetchImpl: options.fetchImpl
+  });
   const codexLocalSessionService = env.codexLocalSessionsScanEnabled
     ? new CodexLocalSessionService({
         rootPath: env.codexLocalSessionsRoot,
@@ -128,6 +134,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     sessionThreadRepository,
     feishuSessionRouteRepository,
     feishuNotifier,
+    qqNotifier,
     terminalEventStream: options.terminalEventStream
   });
   const codexDispatchService = new CodexDispatchService(
@@ -158,7 +165,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     auditLogRepository,
     feishuSessionRouteRepository,
     codexDispatchService,
-    feishuNotifier
+    feishuNotifier,
+    qqNotifier
   });
 
   codexCliRuntimeService.initialize({
@@ -223,6 +231,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
   );
   registerConnectorRoutes(app, connectorConfigService);
+  registerQqRoutes(
+    app,
+    new QqWebhookService({
+      taskRepository,
+      messageRepository,
+      riskConfirmationRepository,
+      toolSessionRepository,
+      sessionThreadRepository,
+      auditLogRepository,
+      connectorConfigService,
+      idempotencyRepository,
+      feishuSessionRouteRepository,
+      codexDispatchService,
+      codexLocalSessionService: codexLocalSessionService ?? undefined,
+      qqNotifier
+    }),
+    connectorConfigService
+  );
   registerSystemRoutes(app, codexCliRuntimeService);
   registerRiskRoutes(app, lightOpsService);
   registerFeishuRoutes(

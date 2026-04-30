@@ -87,4 +87,63 @@ describe("connector config api", () => {
 
     await app.close();
   });
+
+  it("accepts qq websocket mode and passes connection test with app credentials", async () => {
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent"
+      }
+    });
+
+    const current = (
+      await app.inject({
+        method: "GET",
+        url: "/api/connectors/qq/config"
+      })
+    ).json();
+
+    const updateResponse = await app.inject({
+      method: "PUT",
+      url: "/api/connectors/qq/config",
+      payload: {
+        ...current,
+        platform: "qq",
+        enabled: false,
+        appId: "qq_app_id",
+        appSecret: "qq_app_secret",
+        eventMode: "websocket",
+        callbackUrl: "http://127.0.0.1:3000/api/feishu/webhook"
+      }
+    });
+
+    expect(updateResponse.statusCode).toBe(200);
+    expect(updateResponse.json()).toEqual(
+      expect.objectContaining({
+        platform: "qq",
+        eventMode: "websocket"
+      })
+    );
+
+    const testResponse = await app.inject({
+      method: "POST",
+      url: "/api/connectors/qq/test"
+    });
+
+    expect(testResponse.statusCode).toBe(200);
+    expect(testResponse.json()).toEqual(
+      expect.objectContaining({
+        platform: "qq",
+        success: true,
+        lastTestResult: "success",
+        message: expect.stringContaining("QQ websocket mode")
+      })
+    );
+
+    await app.close();
+  });
 });

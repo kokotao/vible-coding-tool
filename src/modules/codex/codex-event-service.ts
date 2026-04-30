@@ -6,6 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { FeishuOutboundNotifier } from "../notifications/feishu-outbound-notifier";
+import { QqOutboundNotifier } from "../notifications/qq-outbound-notifier";
 import { AuditLogRepository } from "../../storage/repositories/audit-log-repository";
 import {
   FeishuSessionRouteRepository,
@@ -28,6 +29,7 @@ type CodexEventServiceDeps = {
   sessionThreadRepository: SessionThreadRepository;
   feishuSessionRouteRepository: FeishuSessionRouteRepository;
   feishuNotifier?: FeishuOutboundNotifier;
+  qqNotifier?: QqOutboundNotifier;
   terminalEventStream?: TerminalEventStream;
 };
 
@@ -186,7 +188,7 @@ export class CodexEventService {
       taskTitle: event.summary?.trim() || summary,
       detail: event.detail?.trim() || null,
       actorId: senderId,
-      ...this.resolveRecipientRoute(updatedTask.sessionId, senderOpenId),
+      recipient: this.resolveRecipientRoute(updatedTask.sessionId, senderOpenId),
       threadAlias: threadBinding?.threadAlias ?? null,
       threadRef: resolvedThreadRef,
       runtimeMeta: event.runtimeMeta ?? null
@@ -383,19 +385,39 @@ export class CodexEventService {
 
   private resolveRecipientRoute(sessionId: string, fallbackOpenId: string | null) {
     const route = this.deps.feishuSessionRouteRepository.findBySessionId(sessionId);
-    if (route && route.sourcePlatform === "feishu" && route.routeStatus === "active") {
-      const groupTarget = this.resolveRecipientChatId(route);
-      if (groupTarget) {
-        return {
-          recipientOpenId: null,
-          recipientChatId: groupTarget
-        };
+    if (route && route.routeStatus === "active") {
+      if (route.sourcePlatform === "feishu") {
+        const groupTarget = this.resolveRecipientChatId(route);
+        if (groupTarget) {
+          return {
+            sourcePlatform: "feishu" as const,
+            recipientOpenId: null,
+            recipientChatId: groupTarget
+          };
+        }
+
+        if (this.parseOpenId(route.senderOpenId)) {
+          return {
+            sourcePlatform: "feishu" as const,
+            recipientOpenId: route.senderOpenId,
+            recipientChatId: null
+          };
+        }
       }
 
-      if (this.parseOpenId(route.senderOpenId)) {
+      if (route.sourcePlatform === "qq") {
+        if (route.chatType === "group" && (route.chatId || "").trim()) {
+          return {
+            sourcePlatform: "qq" as const,
+            recipientUserId: null,
+            recipientGroupId: route.chatId!.trim()
+          };
+        }
+
         return {
-          recipientOpenId: route.senderOpenId,
-          recipientChatId: null
+          sourcePlatform: "qq" as const,
+          recipientUserId: route.senderOpenId,
+          recipientGroupId: null
         };
       }
     }
@@ -403,6 +425,7 @@ export class CodexEventService {
     const session = this.deps.toolSessionRepository.findBySessionId(sessionId);
     const sessionOpenId = this.parseOpenId(session?.createdBy);
     return {
+      sourcePlatform: "feishu" as const,
       recipientOpenId: sessionOpenId ?? fallbackOpenId,
       recipientChatId: null
     };
@@ -438,12 +461,35 @@ export class CodexEventService {
     taskTitle?: string | null;
     detail?: string | null;
     actorId: string;
-    recipientOpenId: string | null;
-    recipientChatId?: string | null;
+    recipient:
+      | { sourcePlatform: "feishu"; recipientOpenId: string | null; recipientChatId?: string | null }
+      | { sourcePlatform: "qq"; recipientUserId: string | null; recipientGroupId?: string | null };
     threadAlias?: string | null;
     threadRef?: string | null;
     runtimeMeta?: CodexRuntimeMeta;
   }) {
+    if (input.recipient.sourcePlatform === "qq") {
+      if (!this.deps.qqNotifier) {
+        return {
+          sent: false,
+          skipped: true,
+          reason: "notifier_disabled",
+          statusCode: null
+        };
+      }
+      return this.deps.qqNotifier.notifyTaskStatus({
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        status: input.status,
+        summary: input.summary,
+        taskTitle: input.taskTitle,
+        detail: input.detail,
+        actorId: input.actorId,
+        recipientUserId: input.recipient.recipientUserId,
+        recipientGroupId: input.recipient.recipientGroupId
+      });
+    }
+
     if (!this.deps.feishuNotifier) {
       return {
         sent: false,
@@ -453,7 +499,20 @@ export class CodexEventService {
       };
     }
 
-    return this.deps.feishuNotifier.notifyTaskStatus(input);
+    return this.deps.feishuNotifier.notifyTaskStatus({
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      status: input.status,
+      summary: input.summary,
+      taskTitle: input.taskTitle,
+      detail: input.detail,
+      actorId: input.actorId,
+      recipientOpenId: input.recipient.recipientOpenId,
+      recipientChatId: input.recipient.recipientChatId ?? null,
+      threadAlias: input.threadAlias ?? null,
+      threadRef: input.threadRef ?? null,
+      runtimeMeta: input.runtimeMeta ?? null
+    });
   }
 
   private normalizeNotifyResult(notify: { sent: boolean; skipped: boolean }) {

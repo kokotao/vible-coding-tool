@@ -24,6 +24,7 @@
     "dev": "tsx src/server.ts",
     "dev:watch": "tsx watch src/server.ts",
     "feishu:ws": "tsx scripts/feishu-ws-bridge.ts",
+    "qq:ws": "tsx scripts/qq-ws-bridge.ts",
     "codex:run": "tsx scripts/codex-task-runner.ts",
     "codex:watch": "tsx scripts/codex-global-watcher.ts",
     "install:check": "node scripts/install-runner.cjs",

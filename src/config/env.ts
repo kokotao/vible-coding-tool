@@ -17,6 +17,10 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .optional()
     .transform((value) => (value ? value === "true" : process.env.NODE_ENV !== "test")),
+  QQ_WS_AUTO_START: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => (value ? value === "true" : process.env.NODE_ENV !== "test")),
   CODEX_LOCAL_SESSIONS_SCAN_ENABLED: z
     .enum(["true", "false"])
     .optional()
@@ -48,6 +52,7 @@ export type AppEnv = {
   feishuEncryptKey: string | undefined;
   feishuOpenBaseUrl: string;
   feishuWsAutoStart: boolean;
+  qqWsAutoStart: boolean;
   codexLocalSessionsScanEnabled: boolean;
   codexLocalSessionsRoot: string;
   codexLocalSessionsScanIntervalMs: number;
@@ -73,6 +78,7 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     feishuEncryptKey: parsed.FEISHU_ENCRYPT_KEY,
     feishuOpenBaseUrl: parsed.FEISHU_OPEN_BASE_URL,
     feishuWsAutoStart: parsed.FEISHU_WS_AUTO_START,
+    qqWsAutoStart: parsed.QQ_WS_AUTO_START,
     codexLocalSessionsScanEnabled: parsed.CODEX_LOCAL_SESSIONS_SCAN_ENABLED,
     codexLocalSessionsRoot: parsed.CODEX_LOCAL_SESSIONS_ROOT,
     codexLocalSessionsScanIntervalMs: parsed.CODEX_LOCAL_SESSIONS_SCAN_INTERVAL_MS,

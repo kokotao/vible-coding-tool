@@ -15,6 +15,7 @@ import {
   startFeishuWsBridge,
   type FeishuWsBridgeHandle
 } from "./modules/feishu/feishu-ws-bridge";
+import { resolveQqWsBridgeDefaults, startQqWsBridge, type QqWsBridgeHandle } from "./modules/qq/qq-ws-bridge";
 
 function loadLocalEnvFiles() {
   const localEnvFiles = [".env.local", ".env"];
@@ -41,8 +42,10 @@ async function main() {
   });
   let watcherHandle: CodexGlobalWatcherHandle | null = null;
   let feishuBridgeHandle: FeishuWsBridgeHandle | null = null;
+  let qqBridgeHandle: QqWsBridgeHandle | null = null;
   const watcherDefaults = resolveCodexGlobalWatcherDefaults();
   const feishuBridgeDefaults = resolveFeishuWsBridgeDefaults();
+  const qqBridgeDefaults = resolveQqWsBridgeDefaults();
 
   try {
     const startupStatus = codexCliRuntimeService.getStatus({
@@ -139,7 +142,29 @@ async function main() {
       }
     }
 
+    if (env.qqWsAutoStart && qqBridgeDefaults.autoStart) {
+      const gatewayUrl = `http://127.0.0.1:${env.port}`;
+      try {
+        qqBridgeHandle = await startQqWsBridge({
+          gatewayUrl,
+          logger: app.log
+        });
+        if (qqBridgeHandle.active) {
+          app.log.info({ gatewayUrl }, "QQ websocket bridge started");
+        } else {
+          app.log.info({ gatewayUrl }, "QQ websocket bridge skipped");
+        }
+      } catch (error) {
+        app.log.error(error, "Failed to start QQ websocket bridge");
+        terminalEventStream.error("Failed to start QQ websocket bridge", error);
+      }
+    }
+
     const shutdown = async () => {
+      await qqBridgeHandle?.stop().catch((error) => {
+        app.log.error(error, "Failed to stop QQ websocket bridge");
+        terminalEventStream.error("Failed to stop QQ websocket bridge", error);
+      });
       await feishuBridgeHandle?.stop().catch((error) => {
         app.log.error(error, "Failed to stop Feishu websocket bridge");
         terminalEventStream.error("停止 Feishu WS Bridge 失败", error);

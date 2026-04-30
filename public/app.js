@@ -45,11 +45,254 @@ const state = {
   }
 };
 
+const LANGUAGE_QUERY_KEY = "lang";
+const LANGUAGE_STORAGE_KEY = "vible.preferredLanguage";
+const SUPPORTED_LANGUAGES = new Set(["zh", "en"]);
+let activeLanguage = "zh";
+let i18nObserver = null;
+let localizeInProgress = false;
+
+const EN_TRANSLATIONS = Object.freeze({
+  "任务驾驶舱与连接中心": "Task Cockpit & Connection Hub",
+  "机器人消息仍然是主交互面，这个页面集中展示任务、会话、风控和连接状态，网页端承接少量补位操作。":
+    "Robot messaging is still the primary interaction. This page centralizes tasks, sessions, risk checks, and connector status, with web as a fallback workspace.",
+  "系统运行中": "System Running",
+  "首页总览": "Dashboard",
+  "本地会话页": "Local Sessions",
+  "系统配置": "System Settings",
+  "健康检查": "Health Check",
+  "实时任务时间线": "Live Task Timeline",
+  "优先展示系统正在执行什么，快速下钻到任务详情。":
+    "Prioritize what is currently running and jump to task details quickly.",
+  "Codex 左侧接管总览（24h）": "Codex Left-Side Overview (24h)",
+  "更新时间：": "Updated:",
+  "活跃任务": "Active Tasks",
+  "最近会话": "Recent Sessions",
+  "风险待确认": "Pending Risk Confirmations",
+  "主确认链路优先在飞书 / QQ，网页端做补位确认。":
+    "Primary confirmation should happen in Feishu / QQ, with web as fallback.",
+  "连接中心": "Connection Hub",
+  "这里是首页级操作区，不只是状态面板。":
+    "This is an operational area, not just a status panel.",
+  "本地会话目录": "Local Session Directory",
+  "打开目录页": "Open Directory Page",
+  "扫描时间：": "Scanned At:",
+  "最近活跃会话": "Recently Active Sessions",
+  "展示标题优先，sessionId 在详情中可见。": "Titles first; sessionId is shown in details.",
+  "进行中任务": "Running Tasks",
+  "待确认风险": "Pending Risks",
+  "活跃会话": "Active Sessions",
+  "今日失败": "Failed Today",
+  "查看任务": "View Task",
+  "停止任务": "Stop Task",
+  "处理中": "Processing",
+  "当前暂无任务事件。等飞书或 QQ 指令进入网关后，这里会滚动更新。":
+    "No task events yet. This feed updates when Feishu or QQ commands enter the gateway.",
+  "无风险说明": "No risk description",
+  "发起人：": "Requested By:",
+  "当前没有待确认风险": "No pending risks right now",
+  "大部分确认动作优先在飞书 / QQ 消息里完成。":
+    "Most confirmations should still be completed in Feishu / QQ.",
+  "尚未绑定默认群 / 频道": "No default group/channel bound",
+  "接入模式：": "Mode:",
+  "最近联调：": "Last Test:",
+  "已可用于机器人消息链路": "Ready for bot messaging flow",
+  "未完成接入": "Setup incomplete",
+  "编辑配置": "Edit Config",
+  "暂无连接器配置。": "No connector configuration yet.",
+  "暂无本地会话目录数据。": "No local session directory data yet.",
+  "暂无消息": "No message yet",
+  "暂无活跃会话。": "No active sessions.",
+  "Codex 总览暂不可用：": "Codex overview is unavailable:",
+  "暂无摘要": "No summary yet",
+  "任务详情": "Task Detail",
+  "事件流": "Event Stream",
+  "近 24 小时没有进行中的 Codex 任务。": "No running Codex tasks in the last 24 hours.",
+  "近 24 小时没有 Codex 会话更新。": "No Codex session updates in the last 24 hours.",
+  "首页数据暂不可用，请稍后刷新。": "Dashboard data is unavailable. Please refresh later.",
+  "本地会话工作台": "Local Session Workspace",
+  "按项目聚合本地 Codex 会话，快速查看历史对话、上下文与工具调用记录。":
+    "Group local Codex sessions by project to quickly inspect history, context, and tool calls.",
+  "返回首页": "Back to Dashboard",
+  "刷新扫描": "Refresh Scan",
+  "刷新目录": "Refresh Directory",
+  "项目目录": "Project Directory",
+  "搜索项目名称或路径": "Search project name or path",
+  "全部项目": "All Projects",
+  "未选择项目": "No project selected",
+  "搜索会话标题": "Search session title",
+  "会话日期": "Session Date",
+  "暂无可选日期": "No available dates",
+  "当前条件下没有会话。": "No sessions match current filters.",
+  "选择会话后显示详细聊天内容。": "Select a session to view detailed chat content.",
+  "会话详情加载失败：": "Failed to load session detail:",
+  "工具调用": "Tool Calls",
+  "元数据": "Metadata",
+  "刷新当前对话": "Refresh Current Chat",
+  "会话信息": "Session Info",
+  "没有匹配到项目。": "No matching projects.",
+  "没有可展示的聊天内容。": "No chat content to display.",
+  "当前会话没有普通对话消息，仅包含工具调用记录。": "This session has no normal chat messages, only tool call records.",
+  "没有工具调用记录。": "No tool call records.",
+  "未识别到文件路径记录。": "No file path records recognized.",
+  "请选择日期": "Please select a date",
+  "工具调用与返回 ": "Tool calls and returns: ",
+  "工具返回": "Tool Return",
+  "工具调用": "Tool Call"
+});
+
+const EN_TRANSLATION_PAIRS = Object.entries(EN_TRANSLATIONS).sort((left, right) => right[0].length - left[0].length);
+
+function normalizeLanguage(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) {
+    return null;
+  }
+  if (text.startsWith("zh")) {
+    return "zh";
+  }
+  if (text.startsWith("en")) {
+    return "en";
+  }
+  return null;
+}
+
+function detectLanguage() {
+  const queryLang = normalizeLanguage(new URLSearchParams(window.location.search || "").get(LANGUAGE_QUERY_KEY));
+  if (queryLang && SUPPORTED_LANGUAGES.has(queryLang)) {
+    return queryLang;
+  }
+
+  let storedLang = null;
+  try {
+    storedLang = normalizeLanguage(window.localStorage?.getItem(LANGUAGE_STORAGE_KEY));
+  } catch {
+    storedLang = null;
+  }
+  if (storedLang && SUPPORTED_LANGUAGES.has(storedLang)) {
+    return storedLang;
+  }
+
+  const browserLanguages = Array.isArray(navigator.languages) ? navigator.languages : [navigator.language];
+  for (const language of browserLanguages) {
+    const normalized = normalizeLanguage(language);
+    if (normalized && SUPPORTED_LANGUAGES.has(normalized)) {
+      return normalized;
+    }
+  }
+
+  return "en";
+}
+
+function applyLanguage(language) {
+  activeLanguage = language;
+  document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+  try {
+    window.localStorage?.setItem(LANGUAGE_STORAGE_KEY, language);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function translateToEnglish(text) {
+  let output = String(text ?? "");
+  for (const [source, target] of EN_TRANSLATION_PAIRS) {
+    if (output.includes(source)) {
+      output = output.split(source).join(target);
+    }
+  }
+  return output;
+}
+
+function localizeText(text) {
+  if (activeLanguage !== "en") {
+    return String(text ?? "");
+  }
+  return translateToEnglish(text);
+}
+
+function localizeAttributes(element) {
+  const attrs = ["title", "placeholder", "aria-label"];
+  attrs.forEach((name) => {
+    if (!element.hasAttribute(name)) {
+      return;
+    }
+    const original = element.getAttribute(name);
+    if (!original || !/[\u4e00-\u9fff]/.test(original)) {
+      return;
+    }
+    const localized = localizeText(original);
+    if (localized !== original) {
+      element.setAttribute(name, localized);
+    }
+  });
+}
+
+function localizeElementTree(root) {
+  if (activeLanguage !== "en" || !root) {
+    return;
+  }
+  if (localizeInProgress) {
+    return;
+  }
+  localizeInProgress = true;
+  try {
+    const textNodeFilter = {
+      acceptNode(node) {
+        if (!node.nodeValue || !/[\u4e00-\u9fff]/.test(node.nodeValue)) {
+          return NodeFilter.FILTER_SKIP;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    };
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, textNodeFilter);
+    let textNode = walker.nextNode();
+    while (textNode) {
+      textNode.nodeValue = localizeText(textNode.nodeValue);
+      textNode = walker.nextNode();
+    }
+
+    if (root instanceof Element) {
+      localizeAttributes(root);
+      root.querySelectorAll("*").forEach((element) => localizeAttributes(element));
+    }
+  } finally {
+    localizeInProgress = false;
+  }
+}
+
+function installI18nObserver() {
+  if (activeLanguage !== "en" || i18nObserver) {
+    return;
+  }
+
+  i18nObserver = new MutationObserver((records) => {
+    records.forEach((record) => {
+      record.addedNodes.forEach((node) => {
+        if (node.nodeType === Node.TEXT_NODE && /[\u4e00-\u9fff]/.test(node.nodeValue || "")) {
+          node.nodeValue = localizeText(node.nodeValue || "");
+          return;
+        }
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          localizeElementTree(node);
+        }
+      });
+    });
+  });
+
+  i18nObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+  localizeElementTree(document.body);
+}
+
 function showToast(message, tone = "info") {
   const stack = ensureToastStack();
   const toast = document.createElement("div");
   toast.className = `toast ${tone}`;
-  toast.textContent = message;
+  toast.textContent = localizeText(message);
   stack.appendChild(toast);
   setTimeout(() => toast.remove(), 2800);
 }
@@ -391,7 +634,8 @@ function formatLocalSessionDateTime(value) {
     return value;
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
+  const dateTimeLocale = activeLanguage === "zh" ? "zh-CN" : "en-US";
+  return new Intl.DateTimeFormat(dateTimeLocale, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -2271,21 +2515,47 @@ function renderSystemDrawer() {
 
 function renderDrawerTab(config, recentOpenIds) {
   if (state.drawer.activeTab === "connection") {
+    const isQq = config.platform === "qq";
+    const normalizedEventMode = config.eventMode || "webhook";
+    const callbackLabel = isQq ? "QQ OpenAPI Base URL (optional)" : "Callback URL";
+    const callbackHint =
+      isQq && normalizedEventMode === "websocket"
+        ? `
+          <div class="inline-note">
+            QQ WebSocket mode does not require public callback URL.
+            Keep this field empty to use default OpenAPI base URL:
+            <code>https://api.sgroup.qq.com</code>.
+          </div>
+        `
+        : isQq
+          ? `
+            <div class="inline-note">
+              QQ webhook mode still requires callback URL configured in QQ Open Platform:
+              <code>${escapeHtml(`${window.location.origin}/api/qq/webhook`)}</code>.
+              This page's callback field only overrides QQ OpenAPI base URL.
+            </div>
+          `
+          : "";
+    const eventModeOptions = `
+          <option value="webhook" ${normalizedEventMode === "webhook" ? "selected" : ""}>Webhook</option>
+          <option value="websocket" ${normalizedEventMode === "websocket" ? "selected" : ""}>WebSocket</option>
+        `;
+
     return `
       <div class="field"><label>App ID</label><input name="appId" value="${escapeHtml(config.appId)}" /></div>
       <div class="field"><label>App Secret</label><input name="appSecret" value="${escapeHtml(config.appSecret)}" /></div>
-      <div class="field"><label>接入模式</label>
+      <div class="field"><label>Event Mode</label>
         <select name="eventMode">
-          <option value="webhook" ${config.eventMode === "webhook" ? "selected" : ""}>Webhook</option>
-          <option value="websocket" ${config.eventMode === "websocket" ? "selected" : ""}>WebSocket</option>
+          ${eventModeOptions}
         </select>
       </div>
-      <div class="field"><label>回调地址</label><input name="callbackUrl" value="${escapeHtml(config.callbackUrl)}" /></div>
-      <div class="field"><label>默认群 / 频道名称</label><input name="defaultChannelName" value="${escapeHtml(config.defaultChannelName || "")}" /></div>
-      <div class="inline-note">最近一次联调：${escapeHtml(config.lastTestResult || "未测试")} ${config.lastTestAt ? `· ${escapeHtml(config.lastTestAt)}` : ""}</div>
+      <div class="field"><label>${callbackLabel}</label><input name="callbackUrl" value="${escapeHtml(config.callbackUrl)}" /></div>
+      ${callbackHint}
+      <div class="field"><label>Default Group / Channel</label><input name="defaultChannelName" value="${escapeHtml(config.defaultChannelName || "")}" /></div>
+      <div class="inline-note">Last test: ${escapeHtml(config.lastTestResult || "untested")} ${config.lastTestAt ? `· ${escapeHtml(config.lastTestAt)}` : ""}</div>
       <div class="drawer-actions">
-        <button class="button primary" data-save-connector="true">保存配置</button>
-        <button class="button" data-test-connector="true">测试连接</button>
+        <button class="button primary" data-save-connector="true">Save Config</button>
+        <button class="button" data-test-connector="true">Test Connection</button>
       </div>
     `;
   }
@@ -2705,5 +2975,8 @@ window.addEventListener("click", (event) => {
     closeSetupWizard();
   }
 });
+
+applyLanguage(detectLanguage());
+installI18nObserver();
 
 void boot();

@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { AppError } from "../../lib/errors";
 import { CodexDispatchService } from "../codex/codex-dispatch-service";
 import { FeishuOutboundNotifier } from "../notifications/feishu-outbound-notifier";
+import { QqOutboundNotifier } from "../notifications/qq-outbound-notifier";
 import { AuditLogRepository } from "../../storage/repositories/audit-log-repository";
 import { FeishuSessionRouteRepository } from "../../storage/repositories/feishu-session-route-repository";
 import { MessageRepository } from "../../storage/repositories/message-repository";
@@ -24,6 +25,7 @@ type LightOpsServiceDeps = {
   feishuSessionRouteRepository: FeishuSessionRouteRepository;
   codexDispatchService?: CodexDispatchService;
   feishuNotifier?: FeishuOutboundNotifier;
+  qqNotifier?: QqOutboundNotifier;
 };
 
 type LightOpsActorInput = {
@@ -106,7 +108,7 @@ export class LightOpsService {
       taskTitle: task.summary || task.taskId,
       detail: stopDetail,
       actorId: actor.actorId,
-      ...this.resolveRecipientRoute(task.sessionId, actor.actorId)
+      recipient: this.resolveRecipientRoute(task.sessionId, actor.actorId)
     });
 
     return {
@@ -160,7 +162,7 @@ export class LightOpsService {
 
     const notifyText = `Manual retry notify\nTask=${task.taskId}\nSession=${task.sessionId}\nStatus=${task.status}`;
     const notifyTarget = this.resolveRecipientRoute(task.sessionId, actor.actorId);
-    const notify = await this.notifyText(notifyText, notifyTarget.recipientOpenId, notifyTarget.recipientChatId ?? null);
+    const notify = await this.notifyText(notifyText, notifyTarget);
 
     return {
       success: true,
@@ -251,7 +253,7 @@ export class LightOpsService {
       taskTitle: task?.summary || risk.taskId,
       detail: riskStatus === "approved" ? "High risk command approved and resumed" : "High risk command rejected",
       actorId: actor.actorId,
-      ...this.resolveRecipientRoute(risk.sessionId, actor.actorId)
+      recipient: this.resolveRecipientRoute(risk.sessionId, actor.actorId)
     });
 
     const dispatch =
@@ -311,9 +313,32 @@ export class LightOpsService {
     taskTitle?: string | null;
     detail?: string | null;
     actorId: string;
-    recipientOpenId?: string | null;
-    recipientChatId?: string | null;
+    recipient:
+      | { sourcePlatform: "feishu"; recipientOpenId: string | null; recipientChatId?: string | null }
+      | { sourcePlatform: "qq"; recipientUserId: string | null; recipientGroupId?: string | null };
   }) {
+    if (input.recipient.sourcePlatform === "qq") {
+      if (!this.deps.qqNotifier) {
+        return {
+          sent: false,
+          skipped: true,
+          reason: "notifier_disabled",
+          statusCode: null
+        };
+      }
+      return this.deps.qqNotifier.notifyTaskStatus({
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        status: input.status,
+        summary: input.summary,
+        taskTitle: input.taskTitle,
+        detail: input.detail,
+        actorId: input.actorId,
+        recipientUserId: input.recipient.recipientUserId,
+        recipientGroupId: input.recipient.recipientGroupId
+      });
+    }
+
     if (!this.deps.feishuNotifier) {
       return {
         sent: false,
@@ -323,10 +348,41 @@ export class LightOpsService {
       };
     }
 
-    return this.deps.feishuNotifier.notifyTaskStatus(input);
+    return this.deps.feishuNotifier.notifyTaskStatus({
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      status: input.status,
+      summary: input.summary,
+      taskTitle: input.taskTitle,
+      detail: input.detail,
+      actorId: input.actorId,
+      recipientOpenId: input.recipient.recipientOpenId ?? null,
+      recipientChatId: input.recipient.recipientChatId ?? null
+    });
   }
 
-  private async notifyText(text: string, recipientOpenId: string | null, recipientChatId: string | null) {
+  private async notifyText(
+    text: string,
+    recipient:
+      | { sourcePlatform: "feishu"; recipientOpenId: string | null; recipientChatId?: string | null }
+      | { sourcePlatform: "qq"; recipientUserId: string | null; recipientGroupId?: string | null }
+  ) {
+    if (recipient.sourcePlatform === "qq") {
+      if (!this.deps.qqNotifier) {
+        return {
+          sent: false,
+          skipped: true,
+          reason: "notifier_disabled",
+          statusCode: null
+        };
+      }
+      return this.deps.qqNotifier.notifyText({
+        text,
+        recipientUserId: recipient.recipientUserId,
+        recipientGroupId: recipient.recipientGroupId ?? null
+      });
+    }
+
     if (!this.deps.feishuNotifier) {
       return {
         sent: false,
@@ -338,31 +394,44 @@ export class LightOpsService {
 
     return this.deps.feishuNotifier.notifyText({
       text,
-      recipientOpenId,
-      recipientChatId
+      recipientOpenId: recipient.recipientOpenId ?? null,
+      recipientChatId: recipient.recipientChatId ?? null
     });
   }
 
   private resolveRecipientRoute(sessionId: string, actorId: string) {
     const route = this.deps.feishuSessionRouteRepository.findBySessionId(sessionId);
-    if (route?.routeStatus === "active" && route.sourcePlatform === "feishu") {
-      if (route.chatType === "group" && (route.chatId || "").trim()) {
-        return {
-          recipientOpenId: null,
-          recipientChatId: route.chatId!.trim()
-        };
+    if (route?.routeStatus === "active") {
+      if (route.sourcePlatform === "feishu") {
+        if (route.chatType === "group" && (route.chatId || "").trim()) {
+          return {
+            sourcePlatform: "feishu" as const,
+            recipientOpenId: null,
+            recipientChatId: route.chatId!.trim()
+          };
+        }
+
+        if (this.isOpenId(route.senderOpenId)) {
+          return {
+            sourcePlatform: "feishu" as const,
+            recipientOpenId: route.senderOpenId,
+            recipientChatId: null
+          };
+        }
       }
 
-      if (this.isOpenId(route.senderOpenId)) {
+      if (route.sourcePlatform === "qq") {
         return {
-          recipientOpenId: route.senderOpenId,
-          recipientChatId: null
+          sourcePlatform: "qq" as const,
+          recipientUserId: route.senderOpenId,
+          recipientGroupId: route.chatType === "group" ? (route.chatId || "").trim() || null : null
         };
       }
     }
 
     if (this.isOpenId(actorId)) {
       return {
+        sourcePlatform: "feishu" as const,
         recipientOpenId: actorId,
         recipientChatId: null
       };
@@ -371,12 +440,14 @@ export class LightOpsService {
     const session = this.deps.toolSessionRepository.findBySessionId(sessionId);
     if (session?.createdBy && this.isOpenId(session.createdBy)) {
       return {
+        sourcePlatform: "feishu" as const,
         recipientOpenId: session.createdBy,
         recipientChatId: null
       };
     }
 
     return {
+      sourcePlatform: "feishu" as const,
       recipientOpenId: null,
       recipientChatId: null
     };
