@@ -445,3 +445,17 @@ CODEX_WATCH_AUTO_START=false
   2. `npm run build:clean-maps`
   3. `npm run publish:check`
   4. `npm pack --dry-run --json`
+
+## 发布加固（阶段 B）
+
+- `prepack` 已升级为：`npm run build && npm run build:protect && npm run build:clean-maps && npm run verify:runtime && npm run publish:check`
+- 新增 `build:protect`：默认对 `dist/src/**/*.js` 执行混淆，支持环境变量：
+  - `PROTECT_LEVEL=basic|strong`（默认 `basic`）
+  - `PROTECT_ENABLED=false`（紧急回滚时可跳过）
+- 新增 `verify:runtime`：自动校验 `viblect --help` 与 `http://127.0.0.1:<port>/health`
+- 推荐发布前命令：
+  1. `npm run build`
+  2. `npm run build:protect`
+  3. `npm run verify:runtime`
+  4. `npm run publish:check`
+  5. `npm pack --dry-run --json`
