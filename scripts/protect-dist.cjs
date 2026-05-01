@@ -26,7 +26,7 @@ function walkJsFiles(rootDir, collector) {
 }
 
 function resolveOptions() {
-  const level = String(process.env.PROTECT_LEVEL || "basic").toLowerCase();
+  const level = String(process.env.PROTECT_LEVEL || "strong").toLowerCase();
   const common = {
     compact: true,
     target: "node",
@@ -87,7 +87,7 @@ function main() {
   }
 
   const elapsed = Date.now() - startedAt;
-  console.log(`[build:protect] obfuscated ${files.length} file(s) in ${elapsed}ms. level=${String(process.env.PROTECT_LEVEL || "basic")}`);
+  console.log(`[build:protect] obfuscated ${files.length} file(s) in ${elapsed}ms. level=${String(process.env.PROTECT_LEVEL || "strong")}`);
 }
 
 main();

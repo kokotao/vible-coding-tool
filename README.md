@@ -23,6 +23,7 @@
 
 | 版本    | 发布时间（UTC）                | 说明           |
 | ----- | ------------------------ | ------------ |
+| 0.1.11 | 2026-05-01T15:32:50.263Z | [7d5b151](https://github.com/kokotao/vible-coding-tool/commit/7d5b1517c09def9af0209fcf1696e51f22d546c9) feat: 落地发布加固阶段B并修复运行时验证稳定性 |
 | 0.1.10 | 2026-04-30T10:34:41.957Z | [85880d9](https://github.com/kokotao/vible-coding-tool/commit/85880d9071e6db55b45dd27ffaf190cfddf9c7a0) feat: update dashboard, feishu integration, and branding assets |
 | 0.1.9 | 2026-04-30T10:22:05.665Z | [85880d9](https://github.com/kokotao/vible-coding-tool/commit/85880d9071e6db55b45dd27ffaf190cfddf9c7a0) feat: update dashboard, feishu integration, and branding assets |
 | 0.1.8 | 2026-04-30T10:08:31.861Z | Codex watcher 最近 open_id 回退与发布记录补齐 |
@@ -436,11 +437,11 @@ CODEX_WATCH_AUTO_START=false
 
 ![codex 完成推送](image.png)
 
-## �����ӹ̣��׶� A��
+## 发布加固（阶段 A）
 
-- `prepack` ������Ϊ��`npm run build && npm run build:clean-maps && npm run publish:check`
-- `publish:check` ���ڻ�Ӳ���أ�`*.map`��`src/**`��`tests/**`��`docs/**`��`.env*`��`data/**`
-- ����ÿ�η���ǰִ�У�
+- `prepack` 已升级为：`npm run build && npm run build:clean-maps && npm run publish:check`
+- `publish:check` 会拦截打包：`*.map`、`src/**`、`tests/**`、`docs/**`、`.env*`、`data/**`
+- 推荐每次发布前执行：
   1. `npm run build`
   2. `npm run build:clean-maps`
   3. `npm run publish:check`
@@ -450,7 +451,7 @@ CODEX_WATCH_AUTO_START=false
 
 - `prepack` 已升级为：`npm run build && npm run build:protect && npm run build:clean-maps && npm run verify:runtime && npm run publish:check`
 - 新增 `build:protect`：默认对 `dist/src/**/*.js` 执行混淆，支持环境变量：
-  - `PROTECT_LEVEL=basic|strong`（默认 `basic`）
+  - `PROTECT_LEVEL=basic|strong`（默认 `strong`）
   - `PROTECT_ENABLED=false`（紧急回滚时可跳过）
 - 新增 `verify:runtime`：自动校验 `viblect --help` 与 `http://127.0.0.1:<port>/health`
 - 推荐发布前命令：
