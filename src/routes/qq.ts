@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { AppError } from "../lib/errors";
 import { ConnectorConfigService } from "../modules/connectors/connector-config-service";
+import { QqImageService } from "../modules/qq/qq-image-service";
 import { createQqValidationSignature, verifyQqEventSignature } from "../modules/qq/qq-security";
 import { QqWebhookService } from "../modules/qq/qq-webhook-service";
 
@@ -20,6 +21,12 @@ type QqCallbackEnvelope = {
     msg_id?: string;
     event_id?: string;
     group_openid?: string;
+    attachments?: Array<{
+      content_type?: string;
+      url?: string;
+      filename?: string;
+      file_info?: string;
+    }>;
     data?: {
       type?: number;
       resolved?: {
@@ -47,6 +54,37 @@ function normalizeMessageText(content: string) {
     .replace(/<@!\d+>/g, "")
     .replace(/<@!\w+>/g, "")
     .trim();
+}
+
+function extractQqImageAttachmentUrl(payloadD: QqCallbackEnvelope["d"] | undefined) {
+  const items = Array.isArray(payloadD?.attachments) ? payloadD.attachments : [];
+  for (const item of items) {
+    const contentType = String(item?.content_type || "").toLowerCase();
+    const url = String(item?.url || "").trim();
+    if (!url) {
+      continue;
+    }
+    if (contentType.startsWith("image/")) {
+      return url;
+    }
+    const fileName = String(item?.filename || "").toLowerCase();
+    if (/\.(png|jpe?g|webp|gif|bmp|svg)$/.test(fileName)) {
+      return url;
+    }
+  }
+  return null;
+}
+
+function buildQqImagePrompt(input: {
+  imageUrl: string;
+  savedPath: string | null;
+  messageText: string;
+  downloadError: string | null;
+}) {
+  const taskText = input.messageText.trim() || "请分析这张图片并输出关键结论。";
+  const imageLine = input.savedPath ? `图片本地路径：${input.savedPath}` : `图片地址：${input.imageUrl}`;
+  const errorLine = input.downloadError ? `图片下载状态：${input.downloadError}` : "图片下载状态：成功";
+  return `${taskText}\n\n[图片输入]\n${imageLine}\n${errorLine}`;
 }
 
 function isQqMessageEventType(eventType: string) {
@@ -80,7 +118,8 @@ function resolveRawBody(request: QqWebhookRequest) {
 export function registerQqRoutes(
   app: FastifyInstance,
   qqWebhookService: QqWebhookService,
-  connectorConfigService: ConnectorConfigService
+  connectorConfigService: ConnectorConfigService,
+  qqImageService: QqImageService
 ) {
   app.register((qqScope, _opts, done) => {
     qqScope.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, callback) => {
@@ -186,7 +225,33 @@ export function registerQqRoutes(
       }
 
       const normalizedText = normalizeMessageText(String(payload.d?.content || ""));
-      if (!normalizedText) {
+      const attachmentImageUrl = extractQqImageAttachmentUrl(payload.d);
+      let finalText = normalizedText;
+      let allowImplicitDispatch = false;
+
+      if (!finalText && attachmentImageUrl) {
+        let savedPath: string | null = null;
+        let downloadError: string | null = null;
+        try {
+          const downloaded = await qqImageService.downloadImageByUrl({
+            imageUrl: attachmentImageUrl,
+            messageId: payload.d?.id ? String(payload.d.id) : null
+          });
+          savedPath = downloaded.savedPath;
+        } catch (error) {
+          downloadError = error instanceof Error ? error.message : String(error);
+        }
+
+        finalText = buildQqImagePrompt({
+          imageUrl: attachmentImageUrl,
+          savedPath,
+          messageText: normalizedText,
+          downloadError
+        });
+        allowImplicitDispatch = true;
+      }
+
+      if (!finalText) {
         return {
           accepted: true,
           ignored: true,
@@ -199,12 +264,13 @@ export function registerQqRoutes(
         senderId,
         messageId: payload.d?.id ? String(payload.d.id) : null,
         eventId: payload.id ? String(payload.id) : null,
-        text: normalizedText,
+        text: finalText,
         chatId: isGroupMessage ? String(payload.d?.group_openid || "").trim() || null : null,
         chatType: isGroupMessage ? "group" : "p2p",
         mentioned: eventType === "GROUP_AT_MESSAGE_CREATE",
         rawMessageId: payload.d?.id ? String(payload.d.id) : null,
-        rawEventId: payload.id ? String(payload.id) : null
+        rawEventId: payload.id ? String(payload.id) : null,
+        allowImplicitDispatch
       });
     });
 

@@ -65,6 +65,7 @@ type FeishuIncomingMessage = {
   chatId: string | null;
   chatType: FeishuSessionRouteChatType | null;
   mentioned: boolean;
+  allowImplicitDispatch?: boolean;
 };
 
 export class FeishuWebhookService {
@@ -190,6 +191,32 @@ export class FeishuWebhookService {
           panelContext.selectedModelSlug ?? null,
           panelContext.selectedReasoningLevel ?? null,
           panelContext.selectedProjectPath ?? null
+        );
+      }
+
+      if (message.allowImplicitDispatch) {
+        const prompt = message.text.trim();
+        if (!prompt) {
+          return this.handleCommandGuidance(message, "ambiguous_command");
+        }
+
+        const parsed: ParsedCommand = {
+          sessionId: null,
+          newSession: false,
+          prompt,
+          threadAlias: null,
+          threadSelector: null,
+          sourcePlatform: "feishu",
+          senderId: message.senderId,
+          platformMessageId: message.messageId
+        };
+
+        return this.executeParsedCommand(
+          message,
+          parsed,
+          panelContext?.selectedModelSlug ?? null,
+          panelContext?.selectedReasoningLevel ?? null,
+          panelContext?.selectedProjectPath ?? null
         );
       }
 

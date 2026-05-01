@@ -1,5 +1,5 @@
 ﻿import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp } from "../../src/app";
@@ -56,6 +56,16 @@ function createFeishuOpenApiMock(options: { userNames?: Record<string, string | 
       }
     },
     {
+      match: /\/open-apis\/im\/v1\/images\/[^/?]+$/,
+      response: () =>
+        new Response(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), {
+          status: 200,
+          headers: {
+            "content-type": "image/png"
+          }
+        })
+    },
+    {
       match: /\/open-apis\/im\/v1\/messages/,
       response: ({ bodyText }) => {
         messageBodies.push(bodyText);
@@ -106,6 +116,28 @@ function parseOutboundInteractiveCard(bodyText: string) {
 
 function normalizeCardContentText(text: string) {
   return text.replace(/<[^>]+>/g, "").replace(/\*\*/g, "").replace(/[：:]\s+/g, "：");
+}
+
+function listFilesRecursively(rootPath: string) {
+  if (!existsSync(rootPath)) {
+    return [] as string[];
+  }
+
+  const results: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const fullPath = join(dir, name);
+      const stat = statSync(fullPath);
+      if (stat.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      results.push(fullPath);
+    }
+  };
+
+  walk(rootPath);
+  return results;
 }
 
 function createFeishuPanelSessionsFixture() {
@@ -383,6 +415,87 @@ describe("feishu webhook api", () => {
     expect(dashboard.json().summary.activeSessionCount).toBe(1);
 
     await app.close();
+  });
+
+  it("accepts image message and converts it into dispatchable prompt with local image path", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const imageRoot = join(process.cwd(), "data", "feishu-images");
+      const beforeFiles = listFilesRecursively(imageRoot);
+
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-image-001",
+              message_type: "image",
+              content: "{\"image_key\":\"img_test_001\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_image_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      const result = response.json() as {
+        accepted: boolean;
+        pendingConfirmation: boolean;
+        taskId: string;
+      };
+      expect(result.accepted).toBe(true);
+      expect(result.pendingConfirmation).toBe(false);
+      expect(result.taskId).toEqual(expect.any(String));
+
+      const afterFiles = listFilesRecursively(imageRoot);
+      expect(afterFiles.length).toBeGreaterThan(beforeFiles.length);
+      const createdFile = afterFiles.find((filePath) => !beforeFiles.includes(filePath));
+      expect(createdFile).toBeDefined();
+      const raw = readFileSync(createdFile!);
+      expect(raw.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    } finally {
+      await app.close();
+    }
   });
 
   it("auto-resolves sender identity on first inbound message and stores display label", async () => {

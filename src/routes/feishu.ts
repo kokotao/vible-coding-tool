@@ -8,6 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError } from "../lib/errors";
 import { FeishuDirectoryService } from "../modules/feishu/feishu-directory-service";
+import { FeishuImageService } from "../modules/feishu/feishu-image-service";
 import { decryptFeishuPayloadIfNeeded, verifyFeishuEventSignature } from "../modules/feishu/feishu-security";
 import { FeishuWebhookService } from "../modules/feishu/feishu-webhook-service";
 
@@ -108,8 +109,77 @@ function decodeFeishuMessageContent(raw: string | undefined) {
       mentionOpenIds
     };
   } catch {
-    return fallback;
+    const looseText = extractLooseTextField(raw);
+    if (!looseText) {
+      return fallback;
+    }
+
+    return {
+      text: stripFeishuMentions(looseText),
+      hasMentionTag: /<at\b/i.test(looseText),
+      mentionOpenIds: [] as string[]
+    };
   }
+}
+
+function extractLooseTextField(raw: string) {
+  const marker = "\"text\":\"";
+  const start = raw.indexOf(marker);
+  if (start < 0) {
+    return "";
+  }
+
+  let index = start + marker.length;
+  let escaped = false;
+  let buffer = "";
+  while (index < raw.length) {
+    const char = raw[index];
+    if (!escaped && char === "\"") {
+      break;
+    }
+
+    if (!escaped && char === "\\") {
+      escaped = true;
+      buffer += char;
+      index += 1;
+      continue;
+    }
+
+    escaped = false;
+    buffer += char;
+    index += 1;
+  }
+
+  return buffer.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t").replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
+}
+
+function decodeFeishuImageKey(raw: string | undefined) {
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as { image_key?: string };
+    const imageKey = String(parsed.image_key || "").trim();
+    return imageKey || null;
+  } catch {
+    return null;
+  }
+}
+
+function buildImagePrompt(input: {
+  imageKey: string;
+  savedPath: string | null;
+  messageText: string;
+  downloadError: string | null;
+}) {
+  const taskText = input.messageText.trim() || "请分析这张图片并输出关键结论。";
+  const imageLine = input.savedPath
+    ? `图片本地路径：${input.savedPath}`
+    : `图片标识：${input.imageKey}（未能下载到本地）`;
+  const errorLine = input.downloadError ? `图片下载状态：${input.downloadError}` : "图片下载状态：成功";
+
+  return `${taskText}\n\n[图片输入]\n${imageLine}\n${errorLine}`;
 }
 
 function stripFeishuMentions(text: string) {
@@ -171,6 +241,7 @@ export function registerFeishuRoutes(
   app: FastifyInstance,
   feishuWebhookService: FeishuWebhookService,
   feishuDirectoryService: FeishuDirectoryService,
+  feishuImageService: FeishuImageService,
   verifyToken: string | undefined,
   encryptKey: string | undefined
 ) {
@@ -205,11 +276,15 @@ export function registerFeishuRoutes(
       };
     }
 
-    if (normalized.eventType === "im.message.receive_v1" && event.message?.message_type !== "text") {
+    if (
+      normalized.eventType === "im.message.receive_v1" &&
+      event.message?.message_type !== "text" &&
+      event.message?.message_type !== "image"
+    ) {
       return {
         accepted: true,
         ignored: true,
-        reason: "non_text_message"
+        reason: "unsupported_message_type"
       };
     }
 
@@ -234,6 +309,39 @@ export function registerFeishuRoutes(
     }
 
     const decoded = decodeFeishuMessageContent(message.content);
+    const isImageMessage = message.message_type === "image";
+    const imageKey = isImageMessage ? decodeFeishuImageKey(message.content) : null;
+    let imagePath: string | null = null;
+    let imageDownloadError: string | null = null;
+
+    if (isImageMessage && imageKey) {
+      try {
+        const downloaded = await feishuImageService.downloadImageByKey({
+          imageKey,
+          messageId: message.message_id ?? null
+        });
+        imagePath = downloaded.savedPath;
+      } catch (error) {
+        imageDownloadError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    if (isImageMessage && !imageKey) {
+      return {
+        accepted: true,
+        ignored: true,
+        reason: "missing_image_key"
+      };
+    }
+
+    const normalizedText = isImageMessage
+      ? buildImagePrompt({
+          imageKey: imageKey!,
+          savedPath: imagePath,
+          messageText: decoded.text,
+          downloadError: imageDownloadError
+        })
+      : decoded.text;
     const openChatId = message.chat_id || event.context?.open_chat_id || null;
     const chatType = (message.chat_type || "").trim().toLowerCase() || null;
     const mentionOpenIds = [
@@ -254,10 +362,11 @@ export function registerFeishuRoutes(
       senderId,
       messageId: message.message_id ?? null,
       eventId: normalized.eventId,
-      text: decoded.text,
+      text: normalizedText,
       chatId: openChatId,
       chatType: chatType === "group" || chatType === "p2p" ? chatType : null,
-      mentioned
+      mentioned,
+      allowImplicitDispatch: isImageMessage
     });
   });
 

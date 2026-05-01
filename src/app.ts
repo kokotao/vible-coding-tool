@@ -18,11 +18,13 @@ import { CodexQueryService } from "./modules/codex/codex-query-service";
 import { DashboardService } from "./modules/dashboard/dashboard-service";
 import { FeishuCommandPanelService } from "./modules/feishu/feishu-command-panel-service";
 import { FeishuIdentityService } from "./modules/feishu/feishu-identity-service";
+import { FeishuImageService } from "./modules/feishu/feishu-image-service";
 import { FeishuDirectoryService } from "./modules/feishu/feishu-directory-service";
 import { FeishuWebhookService } from "./modules/feishu/feishu-webhook-service";
 import { FeishuOutboundNotifier } from "./modules/notifications/feishu-outbound-notifier";
 import { QqOutboundNotifier } from "./modules/notifications/qq-outbound-notifier";
 import { LightOpsService } from "./modules/ops/light-ops-service";
+import { QqImageService } from "./modules/qq/qq-image-service";
 import { QqWebhookService } from "./modules/qq/qq-webhook-service";
 import { SessionQueryService } from "./modules/sessions/session-query-service";
 import { TaskQueryService } from "./modules/tasks/task-query-service";
@@ -91,6 +93,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const qqNotifier = new QqOutboundNotifier(connectorConfigService, {
     fetchImpl: options.fetchImpl
   });
+  const qqImageService = new QqImageService({
+    fetchImpl: options.fetchImpl
+  });
   const codexLocalSessionService = env.codexLocalSessionsScanEnabled
     ? new CodexLocalSessionService({
         rootPath: env.codexLocalSessionsRoot,
@@ -101,6 +106,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const feishuIdentityService = new FeishuIdentityService({
     connectorConfigService,
     identityRepository: feishuIdentityRepository,
+    fetchImpl: options.fetchImpl,
+    openBaseUrl: env.feishuOpenBaseUrl
+  });
+  const feishuImageService = new FeishuImageService({
+    connectorConfigService,
     fetchImpl: options.fetchImpl,
     openBaseUrl: env.feishuOpenBaseUrl
   });
@@ -247,7 +257,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       codexLocalSessionService: codexLocalSessionService ?? undefined,
       qqNotifier
     }),
-    connectorConfigService
+    connectorConfigService,
+    qqImageService
   );
   registerSystemRoutes(app, codexCliRuntimeService);
   registerRiskRoutes(app, lightOpsService);
@@ -272,6 +283,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       terminalEventStream: options.terminalEventStream
     }),
     feishuDirectoryService,
+    feishuImageService,
     env.feishuVerifyToken,
     env.feishuEncryptKey
   );

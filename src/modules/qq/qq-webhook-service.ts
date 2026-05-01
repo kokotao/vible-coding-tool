@@ -43,6 +43,7 @@ export type QqIncomingMessage = {
   mentioned: boolean;
   rawMessageId?: string | null;
   rawEventId?: string | null;
+  allowImplicitDispatch?: boolean;
 };
 
 export type QqIncomingInteraction = {
@@ -150,21 +151,41 @@ export class QqWebhookService {
     }
 
     let parsed: ParsedQqCommand;
-    try {
-      parsed = parseQqCommand({
-        text: message.text,
-        senderId: message.senderId,
-        messageId: message.messageId
-      });
-    } catch (error) {
-      if (error instanceof AppError && error.code === "EMPTY_COMMAND") {
+    if (message.allowImplicitDispatch) {
+      const prompt = (message.text || "").trim();
+      if (!prompt) {
         return {
           accepted: true,
           ignored: true,
           reason: "empty_command"
         };
       }
-      throw error;
+      parsed = {
+        sessionId: null,
+        newSession: false,
+        prompt,
+        threadSelector: null,
+        sourcePlatform: "qq",
+        senderId: message.senderId,
+        platformMessageId: message.messageId
+      };
+    } else {
+      try {
+        parsed = parseQqCommand({
+          text: message.text,
+          senderId: message.senderId,
+          messageId: message.messageId
+        });
+      } catch (error) {
+        if (error instanceof AppError && error.code === "EMPTY_COMMAND") {
+          return {
+            accepted: true,
+            ignored: true,
+            reason: "empty_command"
+          };
+        }
+        throw error;
+      }
     }
 
     if (!parsed.prompt.trim()) {

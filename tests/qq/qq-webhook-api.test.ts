@@ -1,4 +1,6 @@
-﻿import { buildApp } from "../../src/app";
+﻿import { existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { buildApp } from "../../src/app";
 import { createQqRequestSignature } from "../../src/modules/qq/qq-security";
 import { createFetchMock } from "../helpers/fetch-mock";
 
@@ -76,6 +78,16 @@ function createQqApiV2Mock() {
           }
         );
       }
+    },
+    {
+      match: /mock-image\.png$/,
+      response: () =>
+        new Response(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), {
+          status: 200,
+          headers: {
+            "content-type": "image/png"
+          }
+        })
     }
   ]);
 
@@ -103,6 +115,27 @@ function buildSignedQqWebhookRequest(secret: string, payload: unknown, timestamp
       })
     }
   };
+}
+
+function listFilesRecursively(rootPath: string) {
+  if (!existsSync(rootPath)) {
+    return [] as string[];
+  }
+
+  const results: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const fullPath = join(dir, name);
+      const stat = statSync(fullPath);
+      if (stat.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      results.push(fullPath);
+    }
+  };
+  walk(rootPath);
+  return results;
 }
 
 describe("qq webhook api", () => {
@@ -329,6 +362,84 @@ describe("qq webhook api", () => {
         ignored: true,
         reason: "empty_message"
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts image attachment message and downloads image locally for dispatch", async () => {
+    const qqMock = createQqApiV2Mock();
+    const app = buildApp({
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent"
+      },
+      fetchImpl: qqMock.fetchImpl
+    });
+
+    try {
+      const imageRoot = join(process.cwd(), "data", "qq-images");
+      const beforeFiles = listFilesRecursively(imageRoot);
+      const currentConfig = (
+        await app.inject({
+          method: "GET",
+          url: "/api/connectors/qq/config"
+        })
+      ).json();
+
+      const updateConfig = await app.inject({
+        method: "PUT",
+        url: "/api/connectors/qq/config",
+        payload: {
+          ...currentConfig,
+          platform: "qq",
+          enabled: true,
+          appId: "app-id-demo",
+          appSecret: "app-secret-demo",
+          callbackUrl: "http://mock.qq"
+        }
+      });
+      expect(updateConfig.statusCode).toBe(200);
+
+      const callbackPayload = {
+        id: "evt-image-1",
+        op: 0,
+        t: "C2C_MESSAGE_CREATE",
+        d: {
+          id: "msg-image-1",
+          content: "",
+          attachments: [
+            {
+              content_type: "image/png",
+              url: "https://cdn.qq.com/mock-image.png",
+              filename: "mock-image.png"
+            }
+          ],
+          author: {
+            user_openid: "uid_image_demo"
+          }
+        }
+      };
+      const signedRequest = buildSignedQqWebhookRequest("app-secret-demo", callbackPayload);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/qq/webhook",
+        payload: signedRequest.payload,
+        headers: signedRequest.headers
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        accepted: true,
+        pendingConfirmation: false,
+        riskLevel: "low"
+      });
+
+      const afterFiles = listFilesRecursively(imageRoot);
+      expect(afterFiles.length).toBeGreaterThan(beforeFiles.length);
+      const createdFile = afterFiles.find((filePath) => !beforeFiles.includes(filePath));
+      expect(createdFile).toBeDefined();
     } finally {
       await app.close();
     }
@@ -836,3 +947,5 @@ describe("qq webhook api", () => {
     }
   });
 });
+
+
