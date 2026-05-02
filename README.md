@@ -23,6 +23,8 @@
 
 | 版本    | 发布时间（UTC）                | 说明           |
 | ----- | ------------------------ | ------------ |
+| 0.1.13 | 2026-05-02T03:07:12.955Z | [1dcba68](https://github.com/kokotao/vible-coding-tool/commit/1dcba6827079e629a892312c7f9e4e61bce6243a) feat: 支持飞书与QQ图片输入并接入任务派发链路 |
+| 0.1.12 | 2026-05-02T02:10:27.490Z | [1dcba68](https://github.com/kokotao/vible-coding-tool/commit/1dcba6827079e629a892312c7f9e4e61bce6243a) feat: 支持飞书与QQ图片输入并接入任务派发链路 |
 | 0.1.11 | 2026-05-01T15:32:50.263Z | [7d5b151](https://github.com/kokotao/vible-coding-tool/commit/7d5b1517c09def9af0209fcf1696e51f22d546c9) feat: 落地发布加固阶段B并修复运行时验证稳定性 |
 | 0.1.10 | 2026-04-30T10:34:41.957Z | [85880d9](https://github.com/kokotao/vible-coding-tool/commit/85880d9071e6db55b45dd27ffaf190cfddf9c7a0) feat: update dashboard, feishu integration, and branding assets |
 | 0.1.9 | 2026-04-30T10:22:05.665Z | [85880d9](https://github.com/kokotao/vible-coding-tool/commit/85880d9071e6db55b45dd27ffaf190cfddf9c7a0) feat: update dashboard, feishu integration, and branding assets |
