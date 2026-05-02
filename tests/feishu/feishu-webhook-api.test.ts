@@ -14,7 +14,7 @@ function buildFeishuSignature(payload: unknown, timestamp: string, nonce: string
 
 function createFeishuOpenApiMock(options: { userNames?: Record<string, string | null | undefined> } = {}) {
   const messageBodies: string[] = [];
-  const { fetchImpl } = createFetchMock([
+  const { calls, fetchImpl } = createFetchMock([
     {
       match: /\/open-apis\/auth\/v3\/tenant_access_token\/internal$/,
       response: () =>
@@ -56,12 +56,49 @@ function createFeishuOpenApiMock(options: { userNames?: Record<string, string | 
       }
     },
     {
-      match: /\/open-apis\/im\/v1\/images\/[^/?]+$/,
+      match: /\/open-apis\/im\/v1\/messages\/[^/]+\/resources\/[^/?]+\?type=image$/,
       response: () =>
         new Response(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), {
           status: 200,
           headers: {
             "content-type": "image/png"
+          }
+        })
+    },
+    {
+      match: /\/open-apis\/im\/v1\/images\/[^/?]+$/,
+      response: ({ url }) => {
+        const key = decodeURIComponent(url.split("/").pop() || "");
+        if (key.startsWith("img_v3_")) {
+          return new Response(
+            JSON.stringify({
+              code: 234001,
+              msg: "Invalid request param."
+            }),
+            {
+              status: 400,
+              headers: {
+                "content-type": "application/json"
+              }
+            }
+          );
+        }
+
+        return new Response(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), {
+          status: 200,
+          headers: {
+            "content-type": "image/png"
+          }
+        });
+      }
+    },
+    {
+      match: /\/open-apis\/im\/v1\/messages\/[^/]+\/resources\/[^/?]+\?type=file$/,
+      response: () =>
+        new Response(Buffer.from("hello-file-content", "utf8"), {
+          status: 200,
+          headers: {
+            "content-type": "text/plain"
           }
         })
     },
@@ -80,6 +117,7 @@ function createFeishuOpenApiMock(options: { userNames?: Record<string, string | 
   ]);
 
   return {
+    calls,
     fetchImpl,
     messageBodies
   };
@@ -493,6 +531,490 @@ describe("feishu webhook api", () => {
       expect(createdFile).toBeDefined();
       const raw = readFileSync(createdFile!);
       expect(raw.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("prefers message resources endpoint for img_v3 image key in p2p message", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-image-v3-001",
+              message_type: "image",
+              chat_id: "oc_p2p_v3_1",
+              chat_type: "p2p",
+              content: "{\"image_key\":\"img_v3_0211a_af0aa446-b1af-457e-a68f-b615452eff0g\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_image_v3_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          pendingConfirmation: false,
+          riskLevel: "low"
+        })
+      );
+
+      const resourceDownloadCall = mockOpenApi.calls.find((item) =>
+        /\/open-apis\/im\/v1\/messages\/msg-image-v3-001\/resources\/img_v3_0211a_af0aa446-b1af-457e-a68f-b615452eff0g\?type=image$/.test(
+          item.url
+        )
+      );
+      expect(resourceDownloadCall).toBeDefined();
+
+      const directImageCall = mockOpenApi.calls.find((item) =>
+        /\/open-apis\/im\/v1\/images\/img_v3_0211a_af0aa446-b1af-457e-a68f-b615452eff0g$/.test(item.url)
+      );
+      expect(directImageCall).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts file message and downloads file locally for dispatch", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const fileRoot = join(process.cwd(), "data", "feishu-files");
+      const beforeFiles = listFilesRecursively(fileRoot);
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-file-001",
+              message_type: "file",
+              content: "{\"file_key\":\"file_test_001\",\"file_name\":\"需求文档.txt\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_file_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      const result = response.json() as {
+        accepted: boolean;
+        pendingConfirmation: boolean;
+        taskId: string;
+      };
+      expect(result.accepted).toBe(true);
+      expect(result.pendingConfirmation).toBe(false);
+      expect(result.taskId).toEqual(expect.any(String));
+
+      const afterFiles = listFilesRecursively(fileRoot);
+      const candidateFiles = afterFiles.length > 0 ? afterFiles : beforeFiles;
+      const matchedFile = candidateFiles.find((filePath) => {
+        try {
+          const raw = readFileSync(filePath, "utf8");
+          return raw.includes("hello-file-content");
+        } catch {
+          return false;
+        }
+      });
+      expect(matchedFile).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts post message with text and image blocks", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-post-001",
+              message_type: "post",
+              content:
+                "{\"zh_cn\":{\"title\":\"图片说明\",\"content\":[[{\"tag\":\"text\",\"text\":\"请分析这张图\"}],[{\"tag\":\"img\",\"image_key\":\"img_test_post_001\"}]]}}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_post_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          pendingConfirmation: false,
+          riskLevel: "low"
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts en_us post message with text and image blocks", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-post-en-us-001",
+              message_type: "post",
+              content:
+                "{\"en_us\":{\"title\":\"image note\",\"content\":[[{\"tag\":\"text\",\"text\":\"please analyze\"}],[{\"tag\":\"img\",\"image_key\":\"img_test_post_en_us_001\"}]]}}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_post_en_us_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          pendingConfirmation: false,
+          riskLevel: "low"
+        })
+      );
+
+      const savedImage = listFilesRecursively(join(process.cwd(), "data", "feishu-images")).find((path) =>
+        path.includes("msg-post-en-us-001")
+      );
+      expect(savedImage).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts nested stringified post payload and extracts image key", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const nestedPost = JSON.stringify({
+        post: JSON.stringify({
+          en_us: {
+            title: "nested post image note",
+            content: [
+              [{ tag: "text", text: "please inspect this image" }],
+              [{ tag: "img", image_key: "img_test_post_nested_001" }]
+            ]
+          }
+        })
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-post-nested-001",
+              message_type: "post",
+              content: nestedPost
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_post_nested_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          pendingConfirmation: false,
+          riskLevel: "low"
+        })
+      );
+
+      const savedImage = listFilesRecursively(join(process.cwd(), "data", "feishu-images")).find((path) =>
+        path.includes("msg-post-nested-001")
+      );
+      expect(savedImage).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("uses chat_id for p2p outbound when sender id is not open_id", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-p2p-user-id-image-1",
+              message_type: "image",
+              chat_id: "oc_p2p_user_id_chat_1",
+              chat_type: "p2p",
+              content: "{\"image_key\":\"img_test_p2p_user_id_001\"}"
+            },
+            sender: {
+              sender_id: {
+                user_id: "u_user_id_sender_001"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          pendingConfirmation: false,
+          riskLevel: "low"
+        })
+      );
+
+      const outboundCall = mockOpenApi.calls.find((item) =>
+        /\/open-apis\/im\/v1\/messages\?receive_id_type=chat_id$/.test(item.url)
+      );
+      expect(outboundCall).toBeDefined();
+      const outboundPayload = JSON.parse(outboundCall!.bodyText) as {
+        receive_id: string;
+      };
+      expect(outboundPayload.receive_id).toBe("oc_p2p_user_id_chat_1");
     } finally {
       await app.close();
     }
@@ -3439,6 +3961,78 @@ describe("feishu webhook api", () => {
     expect(tasks.json().items).toHaveLength(0);
 
     await app.close();
+  });
+
+  it("accepts group image message without mention", async () => {
+    const mockOpenApi = createFeishuOpenApiMock();
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+
+    const app = buildApp({
+      db,
+      fetchImpl: mockOpenApi.fetchImpl,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        feishuVerifyToken: "verify-token",
+        feishuOpenBaseUrl: "http://mock.feishu"
+      }
+    });
+
+    try {
+      const current = await app.inject({
+        method: "GET",
+        url: "/api/connectors/feishu/config"
+      });
+      const currentConfig = current.json() as Record<string, unknown>;
+      await app.inject({
+        method: "PUT",
+        url: "/api/connectors/feishu/config",
+        payload: {
+          ...currentConfig,
+          enabled: true,
+          appId: "app-id",
+          appSecret: "app-secret",
+          callbackUrl: ""
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/feishu/webhook",
+        headers: {
+          "x-lark-request-token": "verify-token"
+        },
+        payload: {
+          event: {
+            type: "im.message.receive_v1",
+            message: {
+              message_id: "msg-group-image-no-mention-1",
+              message_type: "image",
+              chat_id: "oc_group_image_no_mention_1",
+              chat_type: "group",
+              content: "{\"image_key\":\"img_test_group_no_mention_001\"}"
+            },
+            sender: {
+              sender_id: {
+                open_id: "ou_group_image_no_mention_user"
+              }
+            }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          pendingConfirmation: false,
+          riskLevel: "low"
+        })
+      );
+    } finally {
+      await app.close();
+    }
   });
 
   it("keeps group chat routing consistent from feishu command to codex completion", async () => {

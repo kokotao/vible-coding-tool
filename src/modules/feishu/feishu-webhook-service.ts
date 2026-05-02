@@ -867,7 +867,7 @@ export class FeishuWebhookService {
       } as const;
     }
 
-    if (message.mentioned) {
+    if (message.mentioned || message.allowImplicitDispatch) {
       return {
         accepted: true
       } as const;
@@ -885,10 +885,18 @@ export class FeishuWebhookService {
     chatType: FeishuSessionRouteChatType | null;
     chatId: string | null;
   }) {
-    if (message.chatType === "group" && (message.chatId || "").trim()) {
+    const normalizedChatId = (message.chatId || "").trim();
+    if (message.chatType === "group" && normalizedChatId) {
       return {
         recipientOpenId: null,
-        recipientChatId: message.chatId!.trim()
+        recipientChatId: normalizedChatId
+      };
+    }
+
+    if (message.chatType === "p2p" && normalizedChatId && !this.isOpenId(message.senderId)) {
+      return {
+        recipientOpenId: null,
+        recipientChatId: normalizedChatId
       };
     }
 

@@ -18,6 +18,7 @@ import { CodexQueryService } from "./modules/codex/codex-query-service";
 import { DashboardService } from "./modules/dashboard/dashboard-service";
 import { FeishuCommandPanelService } from "./modules/feishu/feishu-command-panel-service";
 import { FeishuIdentityService } from "./modules/feishu/feishu-identity-service";
+import { FeishuFileService } from "./modules/feishu/feishu-file-service";
 import { FeishuImageService } from "./modules/feishu/feishu-image-service";
 import { FeishuDirectoryService } from "./modules/feishu/feishu-directory-service";
 import { FeishuWebhookService } from "./modules/feishu/feishu-webhook-service";
@@ -110,6 +111,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     openBaseUrl: env.feishuOpenBaseUrl
   });
   const feishuImageService = new FeishuImageService({
+    connectorConfigService,
+    fetchImpl: options.fetchImpl,
+    openBaseUrl: env.feishuOpenBaseUrl
+  });
+  const feishuFileService = new FeishuFileService({
     connectorConfigService,
     fetchImpl: options.fetchImpl,
     openBaseUrl: env.feishuOpenBaseUrl
@@ -283,6 +289,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       terminalEventStream: options.terminalEventStream
     }),
     feishuDirectoryService,
+    feishuFileService,
     feishuImageService,
     env.feishuVerifyToken,
     env.feishuEncryptKey
