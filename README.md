@@ -23,6 +23,7 @@
 
 | 版本    | 发布时间（UTC）                | 说明           |
 | ----- | ------------------------ | ------------ |
+| 0.1.15 | 2026-05-13T09:29:09.511Z | [793cfc1](https://github.com/kokotao/vible-coding-tool/commit/793cfc1a376b092e80008ef2ad5bf704456e6cb7) chore: release 0.1.15 |
 | 0.1.14 | 2026-05-13T03:21:54.405Z | [789d049](https://github.com/kokotao/vible-coding-tool/commit/789d049356695e0e1ab856e09829a80974962b7e) chore: bump viblect to 0.1.14 |
 | 0.1.13 | 2026-05-02T03:07:12.955Z | [1dcba68](https://github.com/kokotao/vible-coding-tool/commit/1dcba6827079e629a892312c7f9e4e61bce6243a) feat: 支持飞书与QQ图片输入并接入任务派发链路 |
 | 0.1.12 | 2026-05-02T02:10:27.490Z | [1dcba68](https://github.com/kokotao/vible-coding-tool/commit/1dcba6827079e629a892312c7f9e4e61bce6243a) feat: 支持飞书与QQ图片输入并接入任务派发链路 |
