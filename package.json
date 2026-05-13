@@ -1,6 +1,6 @@
 {
   "name": "@tauchun/viblect",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "private": false,
   "description": "灵犀桥：连接 Vibe Coding 工具与 IM 机器人的双向智能网关服务。",
   "bin": {
