@@ -19,6 +19,7 @@ type QqWsBridgeOptions = {
   gatewayUrl?: string;
   fetchImpl?: typeof fetch;
   logger?: QqWsBridgeLogger;
+  gatewayHeaders?: Record<string, string>;
   websocketFactory?: (url: string) => QqWsLike;
 };
 
@@ -80,7 +81,7 @@ export async function startQqWsBridge(options: QqWsBridgeOptions = {}): Promise<
   const websocketFactory = options.websocketFactory ?? createDefaultWebSocketFactory();
 
   await ensureGatewayReady(gatewayUrl, fetchImpl);
-  const connectorConfig = await loadConnectorConfig(gatewayUrl, fetchImpl);
+  const connectorConfig = await loadConnectorConfig(gatewayUrl, fetchImpl, options.gatewayHeaders);
   if (connectorConfig.eventMode !== "websocket") {
     logger.info("[qq-ws] skipped: qq connector eventMode is not websocket");
     return {
@@ -313,8 +314,14 @@ async function ensureGatewayReady(gatewayUrl: string, fetchImpl: typeof fetch) {
   }
 }
 
-async function loadConnectorConfig(gatewayUrl: string, fetchImpl: typeof fetch): Promise<QqConnectorConfig> {
-  const response = await fetchImpl(`${gatewayUrl}/api/connectors/qq/config`);
+async function loadConnectorConfig(
+  gatewayUrl: string,
+  fetchImpl: typeof fetch,
+  gatewayHeaders?: Record<string, string>
+): Promise<QqConnectorConfig> {
+  const response = await fetchImpl(`${gatewayUrl}/api/connectors/qq/runtime-config`, {
+    headers: gatewayHeaders
+  });
   if (!response.ok) {
     throw new Error(`failed to load qq connector config: status=${response.status}`);
   }

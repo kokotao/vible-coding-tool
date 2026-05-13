@@ -39,6 +39,7 @@ type FeishuWsBridgeOptions = {
   verifyToken?: string;
   fetchImpl?: typeof fetch;
   logger?: FeishuBridgeLogger;
+  gatewayHeaders?: Record<string, string>;
   clientFactory?: (options: FeishuWsClientOptions) => FeishuWsClientLike;
   dispatcherFactory?: (handlers: FeishuMessageHandlers) => unknown;
 };
@@ -66,7 +67,7 @@ export async function startFeishuWsBridge(options: FeishuWsBridgeOptions = {}): 
   const fetchImpl = options.fetchImpl ?? fetch;
   const logger = options.logger ?? console;
   const verifyToken = (options.verifyToken ?? process.env.FEISHU_VERIFY_TOKEN ?? "").trim();
-  const { appId, appSecret } = await resolveCredentials(gatewayUrl, fetchImpl);
+  const { appId, appSecret } = await resolveCredentials(gatewayUrl, fetchImpl, options.gatewayHeaders);
 
   await ensureGatewayReady(gatewayUrl, fetchImpl);
 
@@ -124,7 +125,7 @@ export async function startFeishuWsBridge(options: FeishuWsBridgeOptions = {}): 
   };
 }
 
-async function resolveCredentials(gatewayUrl: string, fetchImpl: typeof fetch) {
+async function resolveCredentials(gatewayUrl: string, fetchImpl: typeof fetch, gatewayHeaders?: Record<string, string>) {
   const envAppId = (process.env.FEISHU_APP_ID || "").trim();
   const envAppSecret = (process.env.FEISHU_APP_SECRET || "").trim();
 
@@ -135,7 +136,9 @@ async function resolveCredentials(gatewayUrl: string, fetchImpl: typeof fetch) {
     };
   }
 
-  const response = await fetchImpl(`${gatewayUrl}/api/connectors/feishu/config`);
+  const response = await fetchImpl(`${gatewayUrl}/api/connectors/feishu/runtime-config`, {
+    headers: gatewayHeaders
+  });
   if (!response.ok) {
     throw new Error(`failed to load connector config from gateway: status=${response.status}`);
   }

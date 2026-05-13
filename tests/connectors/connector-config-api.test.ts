@@ -227,6 +227,25 @@ describe("connector config api", () => {
     });
     expect(response.json().appSecret).toBeUndefined();
 
+    const runtimeDenied = await app.inject({
+      method: "GET",
+      url: "/api/connectors/feishu/runtime-config"
+    });
+    expect(runtimeDenied.statusCode).toBe(401);
+
+    const runtimeResponse = await app.inject({
+      method: "GET",
+      url: "/api/connectors/feishu/runtime-config",
+      headers: createAdminHeaders()
+    });
+
+    expect(runtimeResponse.statusCode).toBe(200);
+    expect(runtimeResponse.json()).toMatchObject({
+      platform: "feishu",
+      appId: "cli_xxx",
+      appSecret: "secret_xxx"
+    });
+
     await app.close();
   });
 });

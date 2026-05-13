@@ -29,6 +29,11 @@ export function registerConnectorRoutes(
     return connectorConfigService.getAdminConfig(request.params.platform);
   });
 
+  app.get<{ Params: { platform: "feishu" | "qq" } }>("/api/connectors/:platform/runtime-config", async (request) => {
+    verifyAdminAccess(request, adminAccessOptions);
+    return connectorConfigService.getRuntimeConfig(request.params.platform);
+  });
+
   app.put<{ Params: { platform: "feishu" | "qq" }; Body: unknown }>(
     "/api/connectors/:platform/config",
     async (request) => {

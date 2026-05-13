@@ -1,6 +1,7 @@
 import { resolveQqWsBridgeDefaults, startQqWsBridge } from "../../src/modules/qq/qq-ws-bridge";
 import { createQqRequestSignature } from "../../src/modules/qq/qq-security";
 import { createFetchMock } from "../helpers/fetch-mock";
+import { createAdminHeaders } from "../helpers/admin-auth";
 
 class FakeWebSocket {
   readyState = 0;
@@ -45,7 +46,7 @@ describe("qq websocket bridge", () => {
         response: () => new Response(JSON.stringify({ ok: true }), { status: 200 })
       },
       {
-        match: /\/api\/connectors\/qq\/config$/,
+        match: /\/api\/connectors\/qq\/runtime-config$/,
         response: () =>
           new Response(JSON.stringify({ appId: "qq-app", appSecret: "qq-secret", eventMode: "webhook" }), {
             status: 200,
@@ -58,7 +59,8 @@ describe("qq websocket bridge", () => {
 
     const handle = await startQqWsBridge({
       gatewayUrl: "http://mock.gateway",
-      fetchImpl
+      fetchImpl,
+      gatewayHeaders: createAdminHeaders()
     });
     try {
       expect(handle.active).toBe(false);
@@ -78,7 +80,7 @@ describe("qq websocket bridge", () => {
         response: () => new Response(JSON.stringify({ ok: true }), { status: 200 })
       },
       {
-        match: /\/api\/connectors\/qq\/config$/,
+        match: /\/api\/connectors\/qq\/runtime-config$/,
         response: () =>
           new Response(
             JSON.stringify({
@@ -144,6 +146,7 @@ describe("qq websocket bridge", () => {
     const handle = await startQqWsBridge({
       gatewayUrl: "http://mock.gateway",
       fetchImpl,
+      gatewayHeaders: createAdminHeaders(),
       websocketFactory: (url) => {
         const ws = new FakeWebSocket(url);
         sockets.push(ws);
@@ -210,5 +213,32 @@ describe("qq websocket bridge", () => {
 
   it("defaults to auto start outside test env", () => {
     expect(resolveQqWsBridgeDefaults().autoStart).toBe(false);
+  });
+
+  it("throws when runtime config omits qq secret", async () => {
+    const { fetchImpl } = createFetchMock([
+      {
+        match: /\/health$/,
+        response: () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+      },
+      {
+        match: /\/api\/connectors\/qq\/runtime-config$/,
+        response: () =>
+          new Response(JSON.stringify({ appId: "qq-app", eventMode: "websocket", appSecretConfigured: true }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          })
+      }
+    ]);
+
+    await expect(
+      startQqWsBridge({
+        gatewayUrl: "http://mock.gateway",
+        fetchImpl,
+        gatewayHeaders: createAdminHeaders()
+      })
+    ).rejects.toThrow("missing qq appId/appSecret in connector config");
   });
 });

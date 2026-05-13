@@ -17,6 +17,11 @@ import {
   type FeishuWsBridgeHandle
 } from "./modules/feishu/feishu-ws-bridge";
 import { resolveQqWsBridgeDefaults, startQqWsBridge, type QqWsBridgeHandle } from "./modules/qq/qq-ws-bridge";
+import {
+  ADMIN_INTENT_HEADER,
+  ADMIN_INTENT_VALUE,
+  ADMIN_TOKEN_HEADER
+} from "./modules/security/admin-auth";
 
 function loadLocalEnvFiles() {
   const localEnvFiles = [".env.local", ".env"];
@@ -139,6 +144,7 @@ async function main() {
       try {
         feishuBridgeHandle = await startFeishuWsBridge({
           gatewayUrl,
+          gatewayHeaders: createBridgeAdminHeaders(env.webAdminToken),
           logger: app.log
         });
         app.log.info({ gatewayUrl }, "Feishu websocket bridge started");
@@ -153,6 +159,7 @@ async function main() {
       try {
         qqBridgeHandle = await startQqWsBridge({
           gatewayUrl,
+          gatewayHeaders: createBridgeAdminHeaders(env.webAdminToken),
           logger: app.log
         });
         if (qqBridgeHandle.active) {
@@ -231,6 +238,17 @@ function openUrlInDefaultBrowser(url: string) {
   } catch {
     // ignore browser open failures
   }
+}
+
+function createBridgeAdminHeaders(adminToken?: string) {
+  const headers: Record<string, string> = {
+    [ADMIN_INTENT_HEADER]: ADMIN_INTENT_VALUE
+  };
+  const normalizedToken = String(adminToken || "").trim();
+  if (normalizedToken) {
+    headers[ADMIN_TOKEN_HEADER] = normalizedToken;
+  }
+  return headers;
 }
 
 const ANSI = {

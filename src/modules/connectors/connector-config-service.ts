@@ -57,6 +57,10 @@ export class ConnectorConfigService {
     return this.toAdminView(this.getConfig(platform));
   }
 
+  getRuntimeConfig(platform: ConnectorPlatform): ConnectorConfigRecord {
+    return this.getConfig(platform);
+  }
+
   updateConfig(platform: ConnectorPlatform, input: ConnectorConfigInput) {
     if (platform !== input.platform) {
       throw new AppError("PLATFORM_MISMATCH", 400, "Platform in path and payload must match");

@@ -1,5 +1,6 @@
 import { resolveFeishuWsBridgeDefaults, startFeishuWsBridge } from "../../src/modules/feishu/feishu-ws-bridge";
 import { createFetchMock } from "../helpers/fetch-mock";
+import { createAdminHeaders } from "../helpers/admin-auth";
 
 describe("feishu websocket bridge", () => {
   it("auto resolves credentials from gateway and forwards incoming events", async () => {
@@ -10,7 +11,7 @@ describe("feishu websocket bridge", () => {
         response: () => new Response(JSON.stringify({ ok: true }), { status: 200 })
       },
       {
-        match: /\/api\/connectors\/feishu\/config$/,
+        match: /\/api\/connectors\/feishu\/runtime-config$/,
         response: () =>
           new Response(JSON.stringify({ appId: "cli-demo", appSecret: "secret-demo" }), {
             status: 200,
@@ -38,6 +39,7 @@ describe("feishu websocket bridge", () => {
       gatewayUrl: "http://mock.gateway",
       verifyToken: "verify-token",
       fetchImpl,
+      gatewayHeaders: createAdminHeaders(),
       clientFactory: () => ({
         start: async ({ eventDispatcher }) => {
           const handlers = eventDispatcher as {
@@ -97,5 +99,28 @@ describe("feishu websocket bridge", () => {
 
   it("defaults to auto start outside test env", () => {
     expect(resolveFeishuWsBridgeDefaults().autoStart).toBe(false);
+  });
+
+  it("throws when runtime config is missing secret", async () => {
+    const { fetchImpl } = createFetchMock([
+      {
+        match: /\/api\/connectors\/feishu\/runtime-config$/,
+        response: () =>
+          new Response(JSON.stringify({ appId: "cli-demo", appSecretConfigured: true, appSecretMasked: "sec***mo" }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          })
+      }
+    ]);
+
+    await expect(
+      startFeishuWsBridge({
+        gatewayUrl: "http://mock.gateway",
+        fetchImpl,
+        gatewayHeaders: createAdminHeaders()
+      })
+    ).rejects.toThrow("missing FEISHU_APP_ID/FEISHU_APP_SECRET");
   });
 });
