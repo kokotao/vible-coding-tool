@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { LightOpsService } from "../modules/ops/light-ops-service";
+import { type AdminAccessOptions, verifyAdminAccess } from "../modules/security/admin-auth";
 import { TaskQueryService } from "../modules/tasks/task-query-service";
 
 const operationBodySchema = z
@@ -13,13 +14,15 @@ const operationBodySchema = z
 export function registerTaskRoutes(
   app: FastifyInstance,
   taskQueryService: TaskQueryService,
-  lightOpsService: LightOpsService
+  lightOpsService: LightOpsService,
+  adminAccessOptions: AdminAccessOptions
 ) {
   app.get<{ Params: { taskId: string } }>("/api/tasks/:taskId/detail", async (request) => {
     return taskQueryService.getTaskDetail(request.params.taskId);
   });
 
   app.post<{ Params: { taskId: string }; Body: unknown }>("/api/tasks/:taskId/stop", async (request) => {
+    verifyAdminAccess(request, adminAccessOptions);
     const payload = operationBodySchema.parse(request.body);
     return lightOpsService.stopTask(request.params.taskId, payload);
   });
@@ -27,6 +30,7 @@ export function registerTaskRoutes(
   app.post<{ Params: { taskId: string }; Body: unknown }>(
     "/api/tasks/:taskId/retry-notify",
     async (request) => {
+      verifyAdminAccess(request, adminAccessOptions);
       const payload = operationBodySchema.parse(request.body);
       return lightOpsService.retryNotify(request.params.taskId, payload);
     }

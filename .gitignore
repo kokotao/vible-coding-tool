@@ -6,5 +6,6 @@ coverage
 .DS_Store
 .playwright-mcp
 .superpowers
+.codex/tmp/
 .tmp/
 logs/

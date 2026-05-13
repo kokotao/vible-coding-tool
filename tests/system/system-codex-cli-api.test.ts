@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { buildApp } from "../../src/app";
 import { CodexCliRuntimeService } from "../../src/modules/codex/codex-cli-runtime-service";
 import { createSqliteDatabase, migrateDatabase } from "../../src/storage/sqlite";
+import { createAdminHeaders, TEST_ADMIN_TOKEN } from "../helpers/admin-auth";
 
 describe("system codex cli api", () => {
   it("supports status query, api config save, install trigger and project authorization", async () => {
@@ -32,7 +33,8 @@ describe("system codex cli api", () => {
       codexCliRuntimeService: runtimeService,
       env: {
         databasePath: ":memory:",
-        logLevel: "silent"
+        logLevel: "silent",
+        webAdminToken: TEST_ADMIN_TOKEN
       }
     });
 
@@ -54,9 +56,21 @@ describe("system codex cli api", () => {
         })
       );
 
+      const deniedSave = await app.inject({
+        method: "PUT",
+        url: "/api/system/codex-cli/config",
+        payload: {
+          apiBaseUrl: "https://gateway.example.com/v1",
+          apiKey: "sk-test-1234567890",
+          workspaceRoot
+        }
+      });
+      expect(deniedSave.statusCode).toBe(401);
+
       const saveResponse = await app.inject({
         method: "PUT",
         url: "/api/system/codex-cli/config",
+        headers: createAdminHeaders(),
         payload: {
           apiBaseUrl: "https://gateway.example.com/v1",
           apiKey: "sk-test-1234567890",
@@ -80,6 +94,7 @@ describe("system codex cli api", () => {
       const installReject = await app.inject({
         method: "POST",
         url: "/api/system/codex-cli/install",
+        headers: createAdminHeaders(),
         payload: {}
       });
       expect(installReject.statusCode).toBe(400);
@@ -91,6 +106,7 @@ describe("system codex cli api", () => {
       const installConfirm = await app.inject({
         method: "POST",
         url: "/api/system/codex-cli/install",
+        headers: createAdminHeaders(),
         payload: {
           confirm: true
         }
@@ -105,7 +121,8 @@ describe("system codex cli api", () => {
 
       const authorizeResponse = await app.inject({
         method: "POST",
-        url: "/api/system/codex-cli/authorize-project"
+        url: "/api/system/codex-cli/authorize-project",
+        headers: createAdminHeaders()
       });
       expect(authorizeResponse.statusCode).toBe(200);
       expect(authorizeResponse.json()).toEqual(

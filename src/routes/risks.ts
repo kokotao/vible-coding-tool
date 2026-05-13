@@ -7,6 +7,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { LightOpsService } from "../modules/ops/light-ops-service";
+import { type AdminAccessOptions, verifyAdminAccess } from "../modules/security/admin-auth";
 
 const operationBodySchema = z
   .object({
@@ -15,13 +16,15 @@ const operationBodySchema = z
   })
   .optional();
 
-export function registerRiskRoutes(app: FastifyInstance, lightOpsService: LightOpsService) {
+export function registerRiskRoutes(app: FastifyInstance, lightOpsService: LightOpsService, adminAccessOptions: AdminAccessOptions) {
   app.post<{ Params: { token: string }; Body: unknown }>("/api/risks/:token/confirm", async (request) => {
+    verifyAdminAccess(request, adminAccessOptions);
     const payload = operationBodySchema.parse(request.body);
     return lightOpsService.confirmRisk(request.params.token, payload);
   });
 
   app.post<{ Params: { token: string }; Body: unknown }>("/api/risks/:token/reject", async (request) => {
+    verifyAdminAccess(request, adminAccessOptions);
     const payload = operationBodySchema.parse(request.body);
     return lightOpsService.rejectRisk(request.params.token, payload);
   });

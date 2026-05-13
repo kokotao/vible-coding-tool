@@ -1,0 +1,72 @@
+<svg width="1600" height="860" viewBox="0 0 1600 860" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="rg1" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(800 392) rotate(90) scale(280 250)">
+      <stop offset="0" stop-color="#2BEAFF" stop-opacity="0.28"/>
+      <stop offset="0.55" stop-color="#1F7EFF" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#071427" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="lg1" x1="400" y1="170" x2="1180" y2="680" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2DF1FF" stop-opacity="0.92"/>
+      <stop offset="0.52" stop-color="#2A78FF" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#A257FF" stop-opacity="0.86"/>
+    </linearGradient>
+    <linearGradient id="lg2" x1="340" y1="140" x2="1260" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#39E8FF" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#39E8FF" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#39E8FF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="blurGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="1600" height="860" fill="url(#rg1)"/>
+  <g opacity="0.34">
+    <path d="M330 116H1270" stroke="#2E6DFF" stroke-opacity="0.26"/>
+    <path d="M280 170H1320" stroke="#2E6DFF" stroke-opacity="0.18"/>
+    <path d="M250 712H1350" stroke="#2E6DFF" stroke-opacity="0.12"/>
+    <path d="M372 82V770" stroke="#2E6DFF" stroke-opacity="0.12"/>
+    <path d="M1228 82V770" stroke="#2E6DFF" stroke-opacity="0.12"/>
+    <g stroke="#28DFFF" stroke-opacity="0.16">
+      <path d="M406 144C600 144 600 206 800 206C1000 206 1000 144 1194 144" />
+      <path d="M406 244C606 244 622 278 800 278C978 278 994 244 1194 244" />
+      <path d="M406 626C600 626 606 580 800 580C994 580 1000 626 1194 626" />
+    </g>
+  </g>
+
+  <g opacity="0.9" filter="url(#blurGlow)">
+    <circle cx="800" cy="372" r="180" stroke="url(#lg1)" stroke-width="2" stroke-opacity="0.55" fill="none"/>
+    <circle cx="800" cy="372" r="154" stroke="#2CE3FF" stroke-opacity="0.18" fill="none"/>
+    <circle cx="800" cy="372" r="226" stroke="#2CE3FF" stroke-opacity="0.08" fill="none"/>
+    <path d="M588 514C636 462 703 438 800 438C897 438 964 462 1012 514" stroke="url(#lg2)" stroke-width="2.5" fill="none"/>
+    <path d="M606 538C658 494 716 474 800 474C884 474 942 494 994 538" stroke="#2AEAFF" stroke-opacity="0.2" stroke-width="2.5" fill="none"/>
+    <path d="M650 162C702 142 748 132 800 132C852 132 898 142 950 162" stroke="#2AEAFF" stroke-opacity="0.18" stroke-width="2"/>
+  </g>
+
+  <g opacity="0.86">
+    <path d="M742 186L800 154L858 186L880 244L852 300L800 328L748 300L720 244L742 186Z" fill="rgba(11, 31, 62, 0.7)" stroke="#39E8FF" stroke-opacity="0.45"/>
+    <path d="M750 194L800 166L850 194L870 244L847 292L800 320L753 292L730 244L750 194Z" fill="none" stroke="#2CE3FF" stroke-opacity="0.88" stroke-width="3"/>
+    <path d="M782 210L800 196L818 210L825 244L817 276L800 290L783 276L775 244L782 210Z" fill="rgba(42, 114, 255, 0.2)" stroke="#6BEFFF" stroke-opacity="0.9" stroke-width="2"/>
+  </g>
+
+  <g fill="#2CEBFF" fill-opacity="0.7">
+    <circle cx="400" cy="118" r="2"/>
+    <circle cx="514" cy="96" r="1.8"/>
+    <circle cx="1060" cy="114" r="2"/>
+    <circle cx="1202" cy="162" r="1.8"/>
+    <circle cx="1228" cy="430" r="2"/>
+    <circle cx="356" cy="430" r="2"/>
+    <circle cx="444" cy="690" r="1.8"/>
+    <circle cx="1150" cy="706" r="2"/>
+  </g>
+
+  <g opacity="0.28">
+    <path d="M136 668L490 668" stroke="#2CE3FF" stroke-opacity="0.16" />
+    <path d="M1130 668L1460 668" stroke="#2CE3FF" stroke-opacity="0.16" />
+    <path d="M372 668L410 668" stroke="#2CE3FF" stroke-opacity="0.2" />
+    <path d="M1190 668L1228 668" stroke="#2CE3FF" stroke-opacity="0.2" />
+  </g>
+</svg>

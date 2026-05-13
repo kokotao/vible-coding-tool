@@ -9,12 +9,14 @@ import { createLoggerOptions } from "./lib/logger";
 import type { TerminalEventStream } from "./lib/terminal-event-stream";
 import { ConnectorConfigService } from "./modules/connectors/connector-config-service";
 import { ConnectorService } from "./modules/connectors/connector-service";
+import { CommandIntakeService } from "./modules/commands/command-intake-service";
 import { CodexDispatchService } from "./modules/codex/codex-dispatch-service";
 import { CodexEventService } from "./modules/codex/codex-event-service";
 import { CodexCliRuntimeService } from "./modules/codex/codex-cli-runtime-service";
 import { CodexLocalSessionService } from "./modules/codex/codex-local-session-service";
 import { CodexModelCatalogService } from "./modules/codex/codex-model-catalog-service";
 import { CodexQueryService } from "./modules/codex/codex-query-service";
+import { CodexWebChatService } from "./modules/codex/codex-web-chat-service";
 import { DashboardService } from "./modules/dashboard/dashboard-service";
 import { FeishuCommandPanelService } from "./modules/feishu/feishu-command-panel-service";
 import { FeishuIdentityService } from "./modules/feishu/feishu-identity-service";
@@ -48,6 +50,7 @@ import { IdempotencyRepository } from "./storage/repositories/idempotency-reposi
 import { MessageRepository } from "./storage/repositories/message-repository";
 import { RiskConfirmationRepository } from "./storage/repositories/risk-confirmation-repository";
 import { SessionThreadRepository } from "./storage/repositories/session-thread-repository";
+import { TaskDispatchContextRepository } from "./storage/repositories/task-dispatch-context-repository";
 import { TaskRepository } from "./storage/repositories/task-repository";
 import { ToolSessionRepository } from "./storage/repositories/tool-session-repository";
 import { createSqliteDatabase, migrateDatabase, type SqliteDatabase } from "./storage/sqlite";
@@ -77,6 +80,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const riskConfirmationRepository = new RiskConfirmationRepository(db);
   const toolSessionRepository = new ToolSessionRepository(db);
   const sessionThreadRepository = new SessionThreadRepository(db);
+  const taskDispatchContextRepository = new TaskDispatchContextRepository(db);
   const auditLogRepository = new AuditLogRepository(db);
   const idempotencyRepository = new IdempotencyRepository(db);
   const connectorConfigRepository = new ConnectorConfigRepository(db);
@@ -173,6 +177,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     auditLogRepository,
     codexLocalSessionService: codexLocalSessionService ?? undefined
   });
+  const commandIntakeService = new CommandIntakeService({
+    db,
+    connectorConfigService,
+    taskRepository,
+    messageRepository,
+    riskConfirmationRepository,
+    toolSessionRepository,
+    taskDispatchContextRepository,
+    codexDispatchService
+  });
   const lightOpsService = new LightOpsService({
     taskRepository,
     riskConfirmationRepository,
@@ -180,6 +194,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     messageRepository,
     auditLogRepository,
     feishuSessionRouteRepository,
+    taskDispatchContextRepository,
     codexDispatchService,
     feishuNotifier,
     qqNotifier
@@ -224,7 +239,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       auditLogRepository,
       toolSessionRepository
     }),
-    lightOpsService
+    lightOpsService,
+    {
+      adminToken: env.webAdminToken
+    }
   );
   registerSessionRoutes(
     app,
@@ -239,14 +257,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app,
     codexEventService,
     codexQueryService,
+    new CodexWebChatService({
+      taskRepository,
+      messageRepository,
+      toolSessionRepository,
+      commandIntakeService,
+      codexLocalSessionService: codexLocalSessionService ?? undefined
+    }),
     idempotencyRepository,
     {
       ingressToken: env.codexIngressToken,
       signingSecret: env.codexIngressSigningSecret,
       maxSkewSeconds: env.codexIngressMaxSkewSeconds
+    },
+    {
+      adminToken: env.webAdminToken
     }
   );
-  registerConnectorRoutes(app, connectorConfigService);
+  registerConnectorRoutes(app, connectorConfigService, {
+    adminToken: env.webAdminToken
+  });
   registerQqRoutes(
     app,
     new QqWebhookService({
@@ -259,6 +289,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       connectorConfigService,
       idempotencyRepository,
       feishuSessionRouteRepository,
+      commandIntakeService,
       codexDispatchService,
       codexLocalSessionService: codexLocalSessionService ?? undefined,
       qqNotifier
@@ -266,8 +297,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     connectorConfigService,
     qqImageService
   );
-  registerSystemRoutes(app, codexCliRuntimeService);
-  registerRiskRoutes(app, lightOpsService);
+  registerSystemRoutes(app, codexCliRuntimeService, {
+    adminToken: env.webAdminToken
+  });
+  registerRiskRoutes(app, lightOpsService, {
+    adminToken: env.webAdminToken
+  });
   registerFeishuRoutes(
     app,
     new FeishuWebhookService({
@@ -280,6 +315,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       connectorConfigService,
       idempotencyRepository,
       feishuSessionRouteRepository,
+      commandIntakeService,
       codexDispatchService,
       feishuNotifier,
       feishuIdentityService,

@@ -91,7 +91,7 @@ describe("light ops api", () => {
     await app.close();
   });
 
-  it("confirms pending high risk command", async () => {
+  it("records approval but marks task failed when high risk command cannot be resumed", async () => {
     const db = createSqliteDatabase(":memory:");
     migrateDatabase(db);
     seedAppData(db);
@@ -111,10 +111,10 @@ describe("light ops api", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      success: true,
+      success: false,
       taskId: "task-2",
       riskStatus: "approved",
-      taskStatus: "running"
+      taskStatus: "failed"
     });
 
     const dashboard = await app.inject({
@@ -123,16 +123,23 @@ describe("light ops api", () => {
     });
     expect(dashboard.statusCode).toBe(200);
     expect(dashboard.json().summary.pendingRiskCount).toBe(0);
-    expect(dashboard.json().summary.runningTaskCount).toBe(2);
+    expect(dashboard.json().summary.runningTaskCount).toBe(1);
 
     const taskDetail = await app.inject({
       method: "GET",
       url: "/api/tasks/task-2/detail"
     });
     expect(taskDetail.statusCode).toBe(200);
-    expect(taskDetail.json().status).toBe("running");
+    expect(taskDetail.json().status).toBe("failed");
     expect(taskDetail.json().riskRecords[0].status).toBe("approved");
     expect(taskDetail.json().riskRecords[0].confirmedBy).toBe("web_console");
+
+    const sessionDetail = await app.inject({
+      method: "GET",
+      url: "/api/sessions/feishu-codex-0002/detail"
+    });
+    expect(sessionDetail.statusCode).toBe(200);
+    expect(sessionDetail.json().status).toBe("paused");
 
     await app.close();
   });

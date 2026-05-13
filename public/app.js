@@ -20,10 +20,13 @@ const state = {
     selectedThreadId: null,
     detail: null,
     loadError: null,
+    draftMessage: "",
+    sending: false,
     projectSearchText: "",
     searchText: "",
     activeTab: "chat",
-    sessionPage: 1
+    sessionPage: 1,
+    optimisticMessages: []
   },
   connectorConfigs: {},
   drawer: {
@@ -48,6 +51,10 @@ const state = {
 
 const LANGUAGE_QUERY_KEY = "lang";
 const LANGUAGE_STORAGE_KEY = "vible.preferredLanguage";
+const ADMIN_TOKEN_QUERY_KEY = "adminToken";
+const ADMIN_TOKEN_STORAGE_KEY = "vible.adminToken";
+const LOCAL_SESSION_EXPERIMENT_NOTICE_KEY = "vible.localSessionExperimentalNoticeCount";
+const LOCAL_SESSION_EXPERIMENT_NOTICE_LIMIT = 3;
 const SUPPORTED_LANGUAGES = new Set(["zh", "en"]);
 let activeLanguage = "zh";
 let i18nObserver = null;
@@ -231,14 +238,87 @@ function ensureToastStack() {
 }
 
 async function fetchJson(url, options) {
-  const response = await fetch(url, options);
+  const mergedOptions = attachAdminHeaders(url, options);
+  const response = await fetch(url, mergedOptions);
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data.message || "Request failed");
+    const error = new Error(data.message || "Request failed");
+    error.code = data.code || "REQUEST_FAILED";
+    throw error;
   }
 
   return data;
+}
+
+function attachAdminHeaders(url, options = {}) {
+  if (!shouldAttachAdminHeaders(url)) {
+    return options;
+  }
+  const headers = {
+    ...(options.headers || {}),
+    "x-viblect-admin-intent": "web-console"
+  };
+  const adminToken = readAdminTokenFromStorage();
+  if (adminToken) {
+    headers["x-viblect-admin-token"] = adminToken;
+  }
+  return {
+    ...options,
+    headers
+  };
+}
+
+function shouldAttachAdminHeaders(url) {
+  const pathname = new URL(url, window.location.origin).pathname;
+  return (
+    pathname.startsWith("/api/codex/local-sessions") ||
+    pathname.startsWith("/api/connectors/") ||
+    pathname === "/api/system/codex-cli/config" ||
+    pathname === "/api/system/codex-cli/install" ||
+    pathname === "/api/system/codex-cli/authorize-project" ||
+    pathname === "/api/system/workspace-root/pick" ||
+    pathname.startsWith("/api/risks/") ||
+    pathname.endsWith("/stop") ||
+    pathname.endsWith("/retry-notify")
+  );
+}
+
+function readAdminTokenFromStorage() {
+  try {
+    const sessionToken = String(window.sessionStorage?.getItem(ADMIN_TOKEN_STORAGE_KEY) || "").trim();
+    if (sessionToken) {
+      return sessionToken;
+    }
+
+    const legacyToken = String(window.localStorage?.getItem(ADMIN_TOKEN_STORAGE_KEY) || "").trim();
+    if (legacyToken) {
+      window.sessionStorage?.setItem(ADMIN_TOKEN_STORAGE_KEY, legacyToken);
+      window.localStorage?.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+      return legacyToken;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return "";
+}
+
+function captureAdminTokenFromQuery() {
+  const params = new URLSearchParams(window.location.search || "");
+  const adminToken = String(params.get(ADMIN_TOKEN_QUERY_KEY) || "").trim();
+  if (!adminToken) {
+    return;
+  }
+  try {
+    window.sessionStorage?.setItem(ADMIN_TOKEN_STORAGE_KEY, adminToken);
+    window.localStorage?.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+  params.delete(ADMIN_TOKEN_QUERY_KEY);
+  const nextQuery = params.toString();
+  const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash || ""}`;
+  window.history.replaceState(null, "", nextUrl);
 }
 
 function escapeHtml(value) {
@@ -357,6 +437,16 @@ async function loadLocalSessionDetail(threadId, options = {}) {
   return await fetchJson(`/api/codex/local-sessions/${encodeURIComponent(threadId)}${refresh ? "?refresh=true" : ""}`);
 }
 
+async function sendLocalSessionMessage(threadId, payload) {
+  return await fetchJson(`/api/codex/local-sessions/${encodeURIComponent(threadId)}/send`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+}
+
 async function loadLocalSessionsPage(threadId = null, options = {}) {
   const refreshSnapshot = options.refreshSnapshot === true;
   const refreshDetail = options.refreshDetail !== false;
@@ -390,6 +480,191 @@ function syncLocalSessionDetailToSnapshot(detail) {
   };
 }
 
+function isLocalSessionsRouteActiveForThread(threadId) {
+  return route().name === "localSessions" && state.localSessionsPage.selectedThreadId === threadId;
+}
+
+function isLocalSessionMessageInputFocused() {
+  const activeElement = document.activeElement;
+  return activeElement instanceof HTMLInputElement && activeElement.matches("[data-local-session-message-input]");
+}
+
+function shouldDeferLocalSessionChatRender(threadId) {
+  if (!isLocalSessionsRouteActiveForThread(threadId) || state.localSessionsPage.activeTab !== "chat") {
+    return false;
+  }
+
+  const hasDraftMessage = Boolean(String(state.localSessionsPage.draftMessage || "").trim());
+  return isLocalSessionMessageInputFocused() || (hasDraftMessage && !state.localSessionsPage.sending);
+}
+
+function readLocalSessionExperimentNoticeCount() {
+  try {
+    const raw = Number.parseInt(String(window.localStorage?.getItem(LOCAL_SESSION_EXPERIMENT_NOTICE_KEY) || "0"), 10);
+    return Number.isFinite(raw) ? Math.max(0, raw) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeLocalSessionExperimentNoticeCount(count) {
+  try {
+    window.localStorage?.setItem(
+      LOCAL_SESSION_EXPERIMENT_NOTICE_KEY,
+      String(Math.min(LOCAL_SESSION_EXPERIMENT_NOTICE_LIMIT, Math.max(0, count)))
+    );
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function confirmLocalSessionExperimentalNotice() {
+  const currentCount = readLocalSessionExperimentNoticeCount();
+  if (currentCount >= LOCAL_SESSION_EXPERIMENT_NOTICE_LIMIT) {
+    return true;
+  }
+
+  writeLocalSessionExperimentNoticeCount(currentCount + 1);
+  return window.confirm("该功能处于实验阶段（非完全可用），请用飞书或者 QQ 机器人下达指令。\n\n是否仍继续发送？");
+}
+
+function getLocalSessionOptimisticMessages(threadId) {
+  return (state.localSessionsPage.optimisticMessages || []).filter((item) => item.threadId === threadId);
+}
+
+function appendLocalSessionOptimisticMessage(threadId, content) {
+  const optimisticMessage = {
+    clientId: `local-web-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    threadId,
+    kind: "message",
+    role: "user",
+    content,
+    timestamp: new Date().toISOString(),
+    deliveryState: "sending"
+  };
+  state.localSessionsPage.optimisticMessages = [...(state.localSessionsPage.optimisticMessages || []), optimisticMessage];
+  return optimisticMessage;
+}
+
+function updateLocalSessionOptimisticMessage(clientId, patch) {
+  state.localSessionsPage.optimisticMessages = (state.localSessionsPage.optimisticMessages || []).map((item) =>
+    item.clientId === clientId ? { ...item, ...patch } : item
+  );
+}
+
+function removeLocalSessionOptimisticMessage(clientId) {
+  state.localSessionsPage.optimisticMessages = (state.localSessionsPage.optimisticMessages || []).filter(
+    (item) => item.clientId !== clientId
+  );
+}
+
+function reconcileLocalSessionOptimisticMessages(detail) {
+  if (!detail?.threadId) {
+    return;
+  }
+
+  const pendingMatches = getLocalSessionOptimisticMessages(detail.threadId);
+  if (!pendingMatches.length) {
+    return;
+  }
+
+  const messagePool = detail.messages
+    .filter((message) => message.kind === "message" && message.role === "user")
+    .map((message) => String(message.content || "").trim());
+  const remaining = [];
+
+  for (const optimisticMessage of pendingMatches) {
+    const prompt = String(optimisticMessage.content || "").trim();
+    const matchedIndex = messagePool.findIndex((content) => content === prompt);
+    if (matchedIndex >= 0) {
+      messagePool.splice(matchedIndex, 1);
+      continue;
+    }
+    remaining.push(optimisticMessage);
+  }
+
+  state.localSessionsPage.optimisticMessages = [
+    ...(state.localSessionsPage.optimisticMessages || []).filter((item) => item.threadId !== detail.threadId),
+    ...remaining
+  ];
+}
+
+function focusLocalSessionMessageInputToEnd() {
+  const input = appRoot.querySelector("[data-local-session-message-input]");
+  if (!(input instanceof HTMLInputElement)) {
+    return;
+  }
+  input.focus();
+  const cursor = input.value.length;
+  input.setSelectionRange(cursor, cursor);
+}
+
+function syncLocalSessionComposerState() {
+  const input = appRoot.querySelector("[data-local-session-message-input]");
+  const button = appRoot.querySelector("[data-send-local-session-message]");
+  const draftMessage = String(state.localSessionsPage.draftMessage || "");
+  const canSend = Boolean(draftMessage.trim()) && !state.localSessionsPage.sending;
+
+  if (input instanceof HTMLInputElement) {
+    input.disabled = state.localSessionsPage.sending;
+    if (input.value !== draftMessage) {
+      input.value = draftMessage;
+    }
+  }
+
+  if (button instanceof HTMLButtonElement) {
+    button.disabled = !canSend;
+  }
+}
+
+async function submitLocalSessionMessage() {
+  const threadId = state.localSessionsPage.selectedThreadId;
+  const prompt = String(state.localSessionsPage.draftMessage || "").trim();
+  if (!threadId || !prompt || state.localSessionsPage.sending) {
+    return;
+  }
+  if (!confirmLocalSessionExperimentalNotice()) {
+    return;
+  }
+
+  const optimisticMessage = appendLocalSessionOptimisticMessage(threadId, prompt);
+  state.localSessionsPage.sending = true;
+  state.localSessionsPage.draftMessage = "";
+  renderLocalSessionsPageIfCurrent(threadId);
+  scrollLocalChatToBottom();
+
+  try {
+    const result = await sendLocalSessionMessage(threadId, {
+      prompt,
+      actorId: "web_console",
+      sourcePlatform: "web_console"
+    });
+    updateLocalSessionOptimisticMessage(optimisticMessage.clientId, { deliveryState: "sent" });
+    await refreshLocalSessionDetail(threadId, { refresh: true });
+    renderLocalSessionsPageIfCurrent(threadId);
+    scrollLocalChatToBottom();
+    showToast(`已发送，任务ID：${result.taskId}`, "success");
+  } catch (error) {
+    removeLocalSessionOptimisticMessage(optimisticMessage.clientId);
+    showToast(error.message, "error");
+  } finally {
+    state.localSessionsPage.sending = false;
+    renderLocalSessionsPageIfCurrent(threadId);
+    scrollLocalChatToBottom();
+    focusLocalSessionMessageInputToEnd();
+  }
+}
+
+function renderLocalSessionsPageIfCurrent(threadId) {
+  if (!isLocalSessionsRouteActiveForThread(threadId)) {
+    return false;
+  }
+
+  renderLocalSessionsPage();
+  bindLocalSessionsEvents();
+  return true;
+}
+
 async function refreshLocalSessionDetail(threadId, options = {}) {
   const requestId = ++localSessionsRefreshRequestId;
   const refresh = options.refresh === true;
@@ -410,6 +685,7 @@ async function refreshLocalSessionDetail(threadId, options = {}) {
     }
     state.localSessionsPage.detail = detail;
     state.localSessionsPage.loadError = null;
+    reconcileLocalSessionOptimisticMessages(detail);
     if (updateSnapshot) {
       syncLocalSessionDetailToSnapshot(detail);
     }
@@ -451,11 +727,10 @@ function startLocalSessionsRefresh() {
     localSessionsRefreshInFlight = true;
     void refreshLocalSessionDetail(threadId, { refresh: true })
       .then((detail) => {
-        if (!detail || route().name !== "localSessions" || state.localSessionsPage.selectedThreadId !== threadId) {
+        if (!detail || !isLocalSessionsRouteActiveForThread(threadId) || shouldDeferLocalSessionChatRender(threadId)) {
           return;
         }
-        renderLocalSessionsPage();
-        bindLocalSessionsEvents();
+        renderLocalSessionsPageIfCurrent(threadId);
       })
       .catch(() => {
         // 保持当前页面内容不变，下一轮继续尝试。
@@ -1224,13 +1499,16 @@ function renderLocalSessionMessage(message) {
   const roleClass = message.role === "user" ? "user" : "assistant";
   const body = escapeHtml(message.content || "").replaceAll("\n", "<br/>");
   const avatarText = message.role === "user" ? "用户" : "助手";
+  const deliveryStateLabel =
+    message.deliveryState === "sending" ? `<em class="lsw-chat-pending">发送中</em>` : message.deliveryState === "sent" ? `<em class="lsw-chat-pending">已发送</em>` : "";
 
   return `
     <article class="lsw-chat-row ${roleClass === "user" ? "is-user" : ""}">
       <div class="lsw-chat-avatar">${escapeHtml(avatarText)}</div>
-      <div class="lsw-chat-bubble ${roleClass === "user" ? "is-user" : ""}">
+      <div class="lsw-chat-bubble ${roleClass === "user" ? "is-user" : ""} ${message.deliveryState ? "is-pending" : ""}">
         <div class="lsw-chat-meta">
           <strong>${escapeHtml(roleLabel)}</strong>
+          ${deliveryStateLabel}
           <span>${escapeHtml(formatLocalSessionDateTime(message.timestamp))}</span>
         </div>
         <div class="lsw-chat-content">${body}</div>
@@ -1357,10 +1635,12 @@ function renderLocalSessionsPage() {
 
   const selectedDetail = state.localSessionsPage.detail;
   const detail = selectedDetail && selectedSession && selectedDetail.threadId === selectedSession.threadId ? selectedDetail : null;
-  const chatMessages = detail ? detail.messages.slice(-120) : [];
+  const optimisticChatMessages = detail ? getLocalSessionOptimisticMessages(detail.threadId) : [];
+  const chatMessages = detail ? [...detail.messages.slice(-120), ...optimisticChatMessages] : [];
   const artifacts = detail ? deriveLocalSessionArtifacts(detail.messages) : { files: [], tools: [] };
   const chatOnlyCount = chatMessages.filter((message) => isLocalNormalChatMessage(message)).length;
   const toolOnlyCount = chatMessages.filter((message) => isLocalToolEvent(message)).length;
+  const displayedMessageCount = detail ? detail.messageCount + optimisticChatMessages.length : 0;
   const tabCount = {
     chat: chatOnlyCount,
     files: artifacts.files.length,
@@ -1479,8 +1759,20 @@ function renderLocalSessionsPage() {
                 ${renderLocalChatTimeline(chatMessages, formatLocalSessionDateLabel(detail.year, detail.month, detail.day))}
               </div>
               <div class="lsw-chat-input">
-                <input type="text" disabled placeholder="在此输入消息，或输入 @ 选择工具" />
-                <button type="button" disabled>${renderLocalIcon("share")} 发送</button>
+                <input
+                  type="text"
+                  data-local-session-message-input="true"
+                  value="${escapeHtml(state.localSessionsPage.draftMessage || "")}"
+                  placeholder="在此输入消息，按 Enter 发送到当前会话"
+                  ${state.localSessionsPage.sending ? "disabled" : ""}
+                />
+                <button
+                  type="button"
+                  data-send-local-session-message="true"
+                  ${state.localSessionsPage.sending || !String(state.localSessionsPage.draftMessage || "").trim() ? "disabled" : ""}
+                >
+                  ${renderLocalIcon("share")} ${state.localSessionsPage.sending ? "发送中..." : "发送"}
+                </button>
               </div>
             `;
 
@@ -1488,7 +1780,7 @@ function renderLocalSessionsPage() {
       <header class="lsw-chat-head">
         <div class="lsw-chat-title">
           <h2>${escapeHtml(detail.sessionTitle)}</h2>
-          <p>${renderLocalIcon("folder")} ${escapeHtml(detail.projectName)} · ${escapeHtml(detail.messageCount)} 条消息 · ${escapeHtml(
+          <p>${renderLocalIcon("folder")} ${escapeHtml(detail.projectName)} · ${escapeHtml(displayedMessageCount)} 条消息 · ${escapeHtml(
             detail.rolloutFileName
           )}</p>
         </div>
@@ -1985,6 +2277,40 @@ function bindLocalSessionsEvents() {
     });
   });
 
+  appRoot.querySelectorAll("[data-local-session-message-input]").forEach((input) => {
+    input.addEventListener("input", () => {
+      state.localSessionsPage.draftMessage = input.value;
+      syncLocalSessionComposerState();
+    });
+
+    input.addEventListener("compositionstart", () => {
+      input.dataset.composing = "true";
+    });
+
+    input.addEventListener("compositionend", () => {
+      input.dataset.composing = "false";
+      state.localSessionsPage.draftMessage = input.value;
+      syncLocalSessionComposerState();
+    });
+
+    input.addEventListener("keydown", async (event) => {
+      if (event.isComposing || input.dataset.composing === "true") {
+        return;
+      }
+      if (event.key !== "Enter" || event.shiftKey) {
+        return;
+      }
+      event.preventDefault();
+      await submitLocalSessionMessage();
+    });
+  });
+
+  appRoot.querySelectorAll("[data-send-local-session-message]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await submitLocalSessionMessage();
+    });
+  });
+
   appRoot.querySelectorAll("[data-select-local-session-tab]").forEach((button) => {
     button.addEventListener("click", async () => {
       const tab = button.getAttribute("data-select-local-session-tab");
@@ -2028,6 +2354,7 @@ function bindLocalSessionsEvents() {
       state.localSessionsPage.selectedProjectKey = selectedProject.projectKey;
       state.localSessionsPage.selectedDayKey = selectedDay?.dayKey || null;
       state.localSessionsPage.selectedThreadId = selectedSession?.threadId || null;
+      state.localSessionsPage.draftMessage = "";
       state.localSessionsPage.sessionPage = 1;
       await refreshLocalSessionDetail(state.localSessionsPage.selectedThreadId, { refresh: true });
       renderLocalSessionsPage();
@@ -2055,6 +2382,7 @@ function bindLocalSessionsEvents() {
       state.localSessionsPage.selectedProjectKey = selectedProject.projectKey;
       state.localSessionsPage.selectedDayKey = selectedDay.dayKey;
       state.localSessionsPage.selectedThreadId = selectedSession.threadId;
+      state.localSessionsPage.draftMessage = "";
       state.localSessionsPage.sessionPage = 1;
       await refreshLocalSessionDetail(selectedSession.threadId, { refresh: true });
       renderLocalSessionsPage();
@@ -2082,6 +2410,7 @@ function bindLocalSessionsEvents() {
       state.localSessionsPage.selectedProjectKey = selectedProject.projectKey;
       state.localSessionsPage.selectedDayKey = selectedDay.dayKey;
       state.localSessionsPage.selectedThreadId = selectedSession.threadId;
+      state.localSessionsPage.draftMessage = "";
       state.localSessionsPage.sessionPage = 1;
       await refreshLocalSessionDetail(selectedSession.threadId, { refresh: true });
       renderLocalSessionsPage();
@@ -2114,14 +2443,16 @@ function bindTaskDetailEvents() {
 
 async function submitRiskDecision(token, action) {
   const path = action === "confirm" ? "confirm" : "reject";
-  const successMessage = action === "confirm" ? "已确认风险指令" : "已拒绝风险指令";
 
   try {
-    await fetchJson(`/api/risks/${encodeURIComponent(token)}/${path}`, {
+    const result = await fetchJson(`/api/risks/${encodeURIComponent(token)}/${path}`, {
       method: "POST"
     });
     await boot();
-    showToast(successMessage, "success");
+    showToast(
+      result.message || (action === "confirm" ? "已确认风险指令" : "已拒绝风险指令"),
+      result.success === false ? "error" : "success"
+    );
   } catch (error) {
     showToast(error.message, "error");
   }
@@ -2541,7 +2872,9 @@ function renderDrawerTab(config, recentOpenIds) {
 
     return `
       <div class="field"><label>App ID</label><input name="appId" value="${escapeHtml(config.appId)}" /></div>
-      <div class="field"><label>App Secret</label><input name="appSecret" value="${escapeHtml(config.appSecret)}" /></div>
+      <div class="field"><label>App Secret</label><input name="appSecret" value="" placeholder="${
+        config.appSecretConfigured ? escapeHtml(config.appSecretMasked || "已配置") : "留空表示未配置"
+      }" /></div>
       <div class="field"><label>Event Mode</label>
         <select name="eventMode">
           ${eventModeOptions}
@@ -3038,5 +3371,6 @@ window.addEventListener("click", (event) => {
 
 applyLanguage(detectLanguage());
 installI18nObserver();
+captureAdminTokenFromQuery();
 
 void boot();

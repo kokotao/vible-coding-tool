@@ -91,6 +91,18 @@ CREATE TABLE IF NOT EXISTS tasks (
   finished_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS task_dispatch_contexts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
+  thread_ref TEXT,
+  project_path TEXT,
+  model_slug TEXT,
+  model_reasoning_level TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS risk_confirmations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id TEXT NOT NULL,
@@ -169,6 +181,9 @@ CREATE INDEX IF NOT EXISTS idx_risk_confirmations_status_expired_id
 
 CREATE INDEX IF NOT EXISTS idx_risk_confirmations_task_expired_id
   ON risk_confirmations(task_id, expired_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_task_dispatch_contexts_session_updated_id
+  ON task_dispatch_contexts(session_id, updated_at DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created_id
   ON audit_logs(session_id, created_at DESC, id DESC);

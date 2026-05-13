@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>灵犀桥 | AI 编程协作广告落地页</title>
+    <meta
+      name="description"
+      content="3 分钟把 Codex 接入飞书和 QQ。灵犀桥让任务在消息流里发起、执行、回推和确认，真正跑通 AI 编程协作闭环。"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&family=Noto+Sans+SC:wght@400;500;700;900&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/promo/promo.css" />
+  </head>
+  <body>
+    <div class="glow glow-left"></div>
+    <div class="glow glow-right"></div>
+
+    <header class="topbar">
+      <a class="brand" href="/promo/">
+        <img src="/branding/lingxiqiao-logo-final-transparent.png" alt="灵犀桥" />
+        <span>灵犀桥 Lingxi Bridge</span>
+      </a>
+      <a class="btn btn-outline" href="/health" target="_blank" rel="noreferrer">实时健康状态</a>
+    </header>
+
+    <main class="shell">
+      <section class="hero">
+        <p class="kicker">AI 编程协作网关</p>
+        <h1>别再让 AI 编程卡在最后一公里。<br />3 分钟接入，今天就跑通协作闭环。</h1>
+        <p class="hero-text">
+          灵犀桥连接 Codex/Claude 与飞书、QQ，让任务在聊天中发起，在执行中回推，在高风险动作上确认。
+          从“个人工具”直接升级成“团队系统”。
+        </p>
+
+        <div class="cta-row">
+          <a class="btn btn-primary btn-lg" href="/">立即接入管理台</a>
+          <a class="btn btn-outline btn-lg" href="/?drawer=system">打开系统配置</a>
+        </div>
+
+        <div class="trust-row">
+          <span>已支持飞书 / QQ 双向链路</span>
+          <span>支持 <code>vct</code> 全局命令</span>
+          <span>跨平台安装检查与健康探测</span>
+        </div>
+      </section>
+
+      <section class="section compare">
+        <div class="head">
+          <p class="kicker">价值对比</p>
+          <h2>同样用 AI 编程，为什么你的团队要接入灵犀桥</h2>
+        </div>
+
+        <div class="compare-grid">
+          <article class="compare-card weak">
+            <h3>没接入前</h3>
+            <ul>
+              <li>群里提需求，终端里执行，状态回不来</li>
+              <li>多人并行时，任务容易串线</li>
+              <li>高风险动作缺少二次确认</li>
+              <li>结果散在多个窗口，难追踪</li>
+            </ul>
+          </article>
+
+          <article class="compare-card strong">
+            <h3>接入后</h3>
+            <ul>
+              <li>消息里发指令，消息里看结果</li>
+              <li><code>#session</code> 显式路由，协作更稳</li>
+              <li>高风险动作可拦截、可确认</li>
+              <li>任务、会话、风控统一可视化</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="head">
+          <p class="kicker">核心卖点</p>
+          <h2>不是“又一个机器人”，而是可运营的 AI 协作网关</h2>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature">
+            <h3>双向消息闭环</h3>
+            <p>从“下达任务”到“状态回推”，全链路回到飞书/QQ，不再盯终端等结果。</p>
+          </article>
+          <article class="feature">
+            <h3>高风险确认</h3>
+            <p>删除、覆盖、发布等敏感操作先确认再执行，降低误触发风险。</p>
+          </article>
+          <article class="feature">
+            <h3>多端协同</h3>
+            <p>IM 做主要交互，网页做辅助观测，分工清晰，符合团队真实习惯。</p>
+          </article>
+          <article class="feature">
+            <h3>快速落地</h3>
+            <p>Node.js + TypeScript + SQLite，最小成本跑通，再逐步升级。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="head">
+          <p class="kicker">3 分钟起步</p>
+          <h2>照着做，今天就能把第一条任务跑起来</h2>
+        </div>
+
+        <div class="steps">
+          <article class="step">
+            <span>1</span>
+            <div>
+              <h3>安装并检查环境</h3>
+              <pre><code>npm run install:check</code></pre>
+            </div>
+          </article>
+          <article class="step">
+            <span>2</span>
+            <div>
+              <h3>启动网关服务</h3>
+              <pre><code>npm run dev</code></pre>
+            </div>
+          </article>
+          <article class="step">
+            <span>3</span>
+            <div>
+              <h3>验证服务健康</h3>
+              <pre><code>http://127.0.0.1:3000/health</code></pre>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section final-cta" id="contact">
+        <div>
+          <p class="kicker">立即行动</p>
+          <h2>把 AI 编程从“会用”升级到“能协作、可追踪、可控风险”。</h2>
+          <p class="hero-text small">如果你已经在用 Codex 或 Claude，这就是最短路径。</p>
+        </div>
+        <div class="final-actions">
+          <a class="btn btn-primary btn-lg" href="/">现在接入体验</a>
+          <a class="btn btn-outline btn-lg" href="mailto:480199976@qq.com?subject=灵犀桥落地咨询">联系作者咨询</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

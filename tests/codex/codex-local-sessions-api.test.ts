@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp } from "../../src/app";
 import { createSqliteDatabase, migrateDatabase } from "../../src/storage/sqlite";
+import { createAdminHeaders, TEST_ADMIN_TOKEN } from "../helpers/admin-auth";
 
 describe("codex local sessions api", () => {
   it("scans rollout files, groups them by project and exposes parsed chat content", async () => {
@@ -326,6 +327,222 @@ describe("codex local sessions api", () => {
         process.env.USERPROFILE = previousUserProfile;
       }
       rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("requires admin auth for local session endpoints and keeps high-risk web send pending confirmation", async () => {
+    const sessionsRoot = mkdtempSync(join(tmpdir(), "codex-local-send-"));
+    const dayPath = join(sessionsRoot, "2026", "05", "10");
+    mkdirSync(dayPath, { recursive: true });
+    const threadId = "019dca59-78b8-7d10-88fd-b6f9b8a7c409";
+    writeFileSync(
+      join(dayPath, `rollout-2026-05-10T08-00-00-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: threadId,
+            timestamp: "2026-05-10T08:00:00.000Z",
+            cwd: "/Users/albertluo/workSpace/albertLuo/vible-coding-Tool"
+          }
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000,
+        webAdminToken: TEST_ADMIN_TOKEN
+      }
+    });
+
+    try {
+      const denied = await app.inject({
+        method: "GET",
+        url: "/api/codex/local-sessions"
+      });
+      expect(denied.statusCode).toBe(401);
+
+      const sendResponse = await app.inject({
+        method: "POST",
+        url: `/api/codex/local-sessions/${threadId}/send`,
+        headers: createAdminHeaders(),
+        payload: {
+          prompt: "删除当前项目中的危险词配置"
+        }
+      });
+
+      expect(sendResponse.statusCode).toBe(200);
+      expect(sendResponse.json()).toMatchObject({
+        accepted: true,
+        pendingConfirmation: true,
+        riskLevel: "high",
+        sessionId: threadId
+      });
+    } finally {
+      await app.close();
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves unicode prompt for local session web send even when dispatcher is unavailable", async () => {
+    const sessionsRoot = mkdtempSync(join(tmpdir(), "codex-local-unicode-"));
+    const dayPath = join(sessionsRoot, "2026", "05", "13");
+    mkdirSync(dayPath, { recursive: true });
+    const threadId = "019e1ed8-5b4b-7c13-9d4d-57d10c1363e1";
+    writeFileSync(
+      join(dayPath, `rollout-2026-05-13T08-59-16-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: threadId,
+            timestamp: "2026-05-13T08:59:16.000Z",
+            cwd: "/Users/albertluo/workSpace/albertLuo/vible-coding-Tool"
+          }
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000,
+        webAdminToken: TEST_ADMIN_TOKEN
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/codex/local-sessions/${threadId}/send`,
+        headers: createAdminHeaders(),
+        payload: {
+          prompt: "继续修复中文输入问题，并同步回显刚发送的消息"
+        }
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        code: "DISPATCH_FAILED",
+        message: "Dispatch failed: dispatch_disabled"
+      });
+
+      const insertedMessage = db
+        .prepare(`SELECT content, source_platform AS sourcePlatform FROM messages WHERE session_id = ? ORDER BY rowid ASC`)
+        .all(threadId) as Array<{ content: string; sourcePlatform: string }>;
+      expect(insertedMessage).toEqual([
+        {
+          content: "继续修复中文输入问题，并同步回显刚发送的消息",
+          sourcePlatform: "web_console"
+        },
+        {
+          content: "Web dispatch failed: dispatch_disabled",
+          sourcePlatform: "web_console"
+        }
+      ]);
+    } finally {
+      await app.close();
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects web send when the local session already has an active task", async () => {
+    const sessionsRoot = mkdtempSync(join(tmpdir(), "codex-local-busy-"));
+    const dayPath = join(sessionsRoot, "2026", "05", "10");
+    mkdirSync(dayPath, { recursive: true });
+    const threadId = "019dca61-1382-75d3-9d93-d743ff4e7017";
+    writeFileSync(
+      join(dayPath, `rollout-2026-05-10T08-10-00-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: threadId,
+            timestamp: "2026-05-10T08:10:00.000Z",
+            cwd: "/Users/albertluo/workSpace/albertLuo/vible-coding-Tool"
+          }
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const db = createSqliteDatabase(":memory:");
+    migrateDatabase(db);
+    db.prepare(
+      `INSERT INTO tool_sessions (session_id, tool_provider, tool_session_ref, status, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      threadId,
+      "codex",
+      threadId,
+      "running",
+      "web_console",
+      "2026-05-10T08:10:00.000Z",
+      "2026-05-10T08:10:00.000Z"
+    );
+    db.prepare(
+      `INSERT INTO tasks (task_id, session_id, trigger_message_id, task_type, status, summary, started_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "task-busy-api-1",
+      threadId,
+      "evt-busy-api-1",
+      "web_local_session_chat",
+      "running",
+      "still running",
+      "2026-05-10T08:10:00.000Z",
+      null
+    );
+
+    const app = buildApp({
+      db,
+      env: {
+        databasePath: ":memory:",
+        logLevel: "silent",
+        codexLocalSessionsScanEnabled: true,
+        codexLocalSessionsRoot: sessionsRoot,
+        codexLocalSessionsScanIntervalMs: 1000,
+        webAdminToken: TEST_ADMIN_TOKEN
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/codex/local-sessions/${threadId}/send`,
+        headers: createAdminHeaders(),
+        payload: {
+          prompt: "继续执行第二个任务"
+        }
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        code: "SESSION_BUSY",
+        message: "Session is busy with an active task"
+      });
+    } finally {
+      await app.close();
+      rmSync(sessionsRoot, { recursive: true, force: true });
     }
   });
 });

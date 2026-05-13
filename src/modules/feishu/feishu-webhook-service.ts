@@ -18,7 +18,7 @@ import {
 } from "./feishu-message-parser";
 import { type FeishuPanelCommand } from "./feishu-command-panel";
 import { FeishuCommandPanelService } from "./feishu-command-panel-service";
-import { evaluateRisk } from "../risk/risk-guard";
+import { CommandIntakeService } from "../commands/command-intake-service";
 import { CodexDispatchService } from "../codex/codex-dispatch-service";
 import { CodexLocalSessionService } from "../codex/codex-local-session-service";
 import { ConnectorConfigService } from "../connectors/connector-config-service";
@@ -50,6 +50,7 @@ type FeishuWebhookServiceDeps = {
   feishuSessionRouteRepository: FeishuSessionRouteRepository;
   feishuIdentityService: FeishuIdentityService;
   feishuCommandPanelService?: FeishuCommandPanelService;
+  commandIntakeService: CommandIntakeService;
   codexDispatchService?: CodexDispatchService;
   feishuNotifier?: FeishuOutboundNotifier;
   codexLocalSessionService?: CodexLocalSessionService;
@@ -598,20 +599,20 @@ export class FeishuWebhookService {
     });
 
     const senderIdentity = await this.deps.feishuIdentityService.ensureAutoIdentity(parsed.senderId);
-    const risk = evaluateRisk(parsed.prompt, connectorConfig.riskKeywords);
-    const taskId = randomUUID();
-    const eventId = randomUUID();
-    const existingSession = this.deps.toolSessionRepository.findBySessionId(sessionId);
-    const toolSessionRef = threadRef || existingSession?.toolSessionRef || "";
-
-    this.deps.toolSessionRepository.upsert({
+    const intake = this.deps.commandIntakeService.acceptCommand({
       sessionId,
-      toolProvider: "codex",
-      toolSessionRef,
-      status: risk.level === "high" ? "waiting_confirm" : "running",
-      createdBy: parsed.senderId,
-      createdAt: now,
-      updatedAt: now
+      actorId: parsed.senderId,
+      sourcePlatform: parsed.sourcePlatform,
+      prompt: parsed.prompt,
+      taskType: "command",
+      threadRef,
+      modelSlug: selectedModelSlug,
+      modelReasoningLevel: selectedReasoningLevel,
+      projectPath: selectedProjectPath,
+      platformMessageId: parsed.platformMessageId,
+      riskKeywords: connectorConfig.riskKeywords,
+      confirmTimeoutSeconds: connectorConfig.confirmTimeoutSeconds,
+      createdBy: parsed.senderId
     });
     this.upsertSessionRoute({
       sessionId,
@@ -621,48 +622,8 @@ export class FeishuWebhookService {
       platformMessageId: parsed.platformMessageId,
       now
     });
-
-    this.deps.taskRepository.create({
-      taskId,
-      sessionId,
-      triggerMessageId: eventId,
-      taskType: "command",
-      status: risk.level === "high" ? "pending_confirm" : "running",
-      summary: parsed.prompt,
-      startedAt: now,
-      finishedAt: null
-    });
-
-    this.deps.messageRepository.create({
-      eventId,
-      sessionId,
-      direction: "bot_to_tool",
-      sourcePlatform: parsed.sourcePlatform,
-      platformMessageId: parsed.platformMessageId,
-      senderId: parsed.senderId,
-      content: parsed.prompt,
-      messageType: "command",
-      riskLevel: risk.level,
-      status: risk.level === "high" ? "pending_confirm" : "running",
-      taskId,
-      createdAt: now
-    });
-
-    if (risk.level === "high") {
-      const expiredAt = new Date(Date.now() + connectorConfig.confirmTimeoutSeconds * 1000).toISOString();
-      this.deps.riskConfirmationRepository.create({
-        taskId,
-        sessionId,
-        requestedBy: parsed.senderId,
-        confirmationToken: randomUUID(),
-        status: "pending",
-        expiredAt,
-        confirmedBy: null,
-        confirmedAt: null
-      });
-    }
-
-    const status = risk.level === "high" ? "pending_confirm" : "running";
+    const taskId = intake.taskId;
+    const status = intake.taskStatus;
     const replyTarget = this.resolveReplyTarget(message);
     const notify = await this.notifyTaskStatus({
       taskId,
@@ -687,35 +648,15 @@ export class FeishuWebhookService {
       createdAt: now
     });
 
-    const dispatch =
-      risk.level === "high"
-        ? {
-            accepted: false,
-            skipped: true,
-            reason: "pending_confirmation",
-            pid: null,
-            threadRef
-          }
-        : this.dispatchTask({
-            taskId,
-            sessionId,
-            prompt: parsed.prompt,
-            actorId: parsed.senderId,
-            threadRef,
-            modelSlug: selectedModelSlug,
-            modelReasoningLevel: selectedReasoningLevel,
-            projectPath: selectedProjectPath
-          });
-
     this.deps.feishuCommandPanelService?.clearComposeMode(parsed.senderId);
 
     return {
       accepted: true,
       sessionId,
       taskId,
-      riskLevel: risk.level,
-      pendingConfirmation: risk.level === "high",
-      message: risk.level === "high" ? "High risk command pending confirmation" : "Command accepted",
+      riskLevel: intake.riskLevel,
+      pendingConfirmation: intake.pendingConfirmation,
+      message: intake.pendingConfirmation ? "High risk command pending confirmation" : "Command accepted",
       threadRef,
       senderIdentity: senderIdentity
         ? {
@@ -726,7 +667,7 @@ export class FeishuWebhookService {
           }
         : null,
       notify,
-      dispatch
+      dispatch: this.toDispatchSummary(intake.dispatch)
     };
   }
 
@@ -906,36 +847,13 @@ export class FeishuWebhookService {
     };
   }
 
-  private dispatchTask(input: {
-    taskId: string;
-    sessionId: string;
-    prompt: string;
-    actorId: string;
-    threadRef?: string | null;
-    modelSlug?: string | null;
-    modelReasoningLevel?: string | null;
-    projectPath?: string | null;
+  private toDispatchSummary(result: {
+    accepted: boolean;
+    skipped: boolean;
+    reason: string | null;
+    pid: number | null;
+    threadRef: string | null;
   }) {
-    if (!this.deps.codexDispatchService) {
-      return {
-        accepted: false,
-        skipped: true,
-        reason: "dispatcher_disabled",
-        pid: null,
-        threadRef: input.threadRef ?? null
-      };
-    }
-
-    const result = this.deps.codexDispatchService.dispatchTask({
-      taskId: input.taskId,
-      sessionId: input.sessionId,
-      prompt: input.prompt,
-      actorId: input.actorId,
-      threadRef: input.threadRef ?? null,
-      modelSlug: input.modelSlug ?? null,
-      modelReasoningLevel: input.modelReasoningLevel ?? null,
-      projectPath: input.projectPath ?? null
-    });
     return {
       accepted: result.accepted,
       skipped: result.skipped,

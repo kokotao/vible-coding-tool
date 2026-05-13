@@ -13,6 +13,7 @@ import { AuditLogRepository } from "../../storage/repositories/audit-log-reposit
 import { FeishuSessionRouteRepository } from "../../storage/repositories/feishu-session-route-repository";
 import { MessageRepository } from "../../storage/repositories/message-repository";
 import { RiskConfirmationRepository } from "../../storage/repositories/risk-confirmation-repository";
+import { TaskDispatchContextRepository } from "../../storage/repositories/task-dispatch-context-repository";
 import { TaskRepository } from "../../storage/repositories/task-repository";
 import { ToolSessionRepository } from "../../storage/repositories/tool-session-repository";
 
@@ -23,6 +24,7 @@ type LightOpsServiceDeps = {
   messageRepository: MessageRepository;
   auditLogRepository: AuditLogRepository;
   feishuSessionRouteRepository: FeishuSessionRouteRepository;
+  taskDispatchContextRepository: TaskDispatchContextRepository;
   codexDispatchService?: CodexDispatchService;
   feishuNotifier?: FeishuOutboundNotifier;
   qqNotifier?: QqOutboundNotifier;
@@ -175,12 +177,109 @@ export class LightOpsService {
   }
 
   async confirmRisk(confirmationToken: string, actorInput?: LightOpsActorInput) {
-    return this.handleRiskDecision(confirmationToken, "approved", "running", null, "risk_confirm", actorInput);
+    return this.handleRiskApproval(confirmationToken, actorInput);
   }
 
   async rejectRisk(confirmationToken: string, actorInput?: LightOpsActorInput) {
     const now = new Date().toISOString();
     return this.handleRiskDecision(confirmationToken, "rejected", "rejected", now, "risk_reject", actorInput);
+  }
+
+  private async handleRiskApproval(confirmationToken: string, actorInput?: LightOpsActorInput) {
+    const risk = this.deps.riskConfirmationRepository.findByToken(confirmationToken);
+    if (!risk) {
+      throw new AppError("RISK_CONFIRMATION_NOT_FOUND", 404, `Risk confirmation ${confirmationToken} not found`);
+    }
+
+    if (risk.status !== "pending") {
+      throw new AppError("RISK_CONFIRMATION_ALREADY_HANDLED", 409, `Risk confirmation ${confirmationToken} already handled`);
+    }
+
+    const actor = normalizeActor(actorInput);
+    const now = new Date().toISOString();
+    const task = this.deps.taskRepository.findByTaskId(risk.taskId);
+    const dispatch =
+      task
+        ? this.dispatchTask({
+            taskId: task.taskId,
+            sessionId: task.sessionId,
+            prompt: task.summary || "",
+            actorId: actor.actorId,
+            ...this.resolveDispatchContext(task.taskId)
+          })
+        : {
+            accepted: false,
+            skipped: true,
+            reason: "task_not_found",
+            pid: null,
+            threadRef: null
+          };
+
+    const dispatchAccepted = Boolean(task) && dispatch.accepted;
+    const taskStatus = dispatchAccepted ? "running" : "failed";
+    const sessionStatus = dispatchAccepted ? "running" : "paused";
+    const messageText = dispatchAccepted
+      ? `High risk command approved; task ${risk.taskId} resumed`
+      : `High risk command approved, but dispatch failed; task ${risk.taskId} moved to failed`;
+    const notifySummary = dispatchAccepted
+      ? "High risk command approved and resumed"
+      : `High risk command approved but dispatch failed (${dispatch.reason || "unknown"})`;
+
+    this.deps.riskConfirmationRepository.updateDecisionByToken(confirmationToken, "approved", actor.actorId, now);
+
+    if (task) {
+      this.deps.taskRepository.updateStatus(task.taskId, taskStatus, dispatchAccepted ? null : now);
+    }
+
+    this.deps.toolSessionRepository.updateStatus(risk.sessionId, sessionStatus, now);
+
+    this.deps.messageRepository.create({
+      eventId: randomUUID(),
+      sessionId: risk.sessionId,
+      direction: "tool_to_bot",
+      sourcePlatform: actor.sourcePlatform,
+      platformMessageId: null,
+      senderId: actor.actorId,
+      content: messageText,
+      messageType: "risk_decision",
+      riskLevel: "high",
+      status: taskStatus,
+      taskId: risk.taskId,
+      createdAt: now
+    });
+
+    this.deps.auditLogRepository.create({
+      eventId: randomUUID(),
+      taskId: risk.taskId,
+      sessionId: risk.sessionId,
+      action: "risk_confirm",
+      actorId: actor.actorId,
+      result: dispatchAccepted ? "success" : "failed",
+      detail: `Decision approved via web console; dispatchAccepted=${dispatch.accepted}; dispatchReason=${dispatch.reason || "null"}`,
+      createdAt: now
+    });
+
+    const notify = await this.notifyTaskStatus({
+      taskId: risk.taskId,
+      sessionId: risk.sessionId,
+      status: taskStatus,
+      summary: notifySummary,
+      taskTitle: task?.summary || risk.taskId,
+      detail: notifySummary,
+      actorId: actor.actorId,
+      recipient: this.resolveRecipientRoute(risk.sessionId, actor.actorId)
+    });
+
+    return {
+      success: dispatchAccepted,
+      taskId: risk.taskId,
+      sessionId: risk.sessionId,
+      riskStatus: "approved" as const,
+      taskStatus,
+      message: dispatchAccepted ? "Risk confirmation approved" : "Risk confirmation approved but dispatch failed",
+      notify,
+      dispatch
+    };
   }
 
   private async handleRiskDecision(
@@ -245,32 +344,17 @@ export class LightOpsService {
       createdAt: now
     });
 
+    const notifySummary = riskStatus === "approved" ? "High risk command approved and resumed" : "High risk command rejected";
     const notify = await this.notifyTaskStatus({
       taskId: risk.taskId,
       sessionId: risk.sessionId,
       status: taskStatus,
-      summary: riskStatus === "approved" ? "High risk command approved and resumed" : "High risk command rejected",
+      summary: notifySummary,
       taskTitle: task?.summary || risk.taskId,
-      detail: riskStatus === "approved" ? "High risk command approved and resumed" : "High risk command rejected",
+      detail: notifySummary,
       actorId: actor.actorId,
       recipient: this.resolveRecipientRoute(risk.sessionId, actor.actorId)
     });
-
-    const dispatch =
-      riskStatus === "approved" && task
-        ? this.dispatchTask({
-            taskId: task.taskId,
-            sessionId: task.sessionId,
-            prompt: task.summary || "",
-            actorId: actor.actorId
-          })
-        : {
-            accepted: false,
-            skipped: true,
-            reason: "not_required",
-            pid: null,
-            threadRef: null
-          };
 
     return {
       success: true,
@@ -280,11 +364,26 @@ export class LightOpsService {
       taskStatus,
       message: riskStatus === "approved" ? "Risk confirmation approved" : "Risk confirmation rejected",
       notify,
-      dispatch
+      dispatch: {
+        accepted: false,
+        skipped: true,
+        reason: "not_required",
+        pid: null,
+        threadRef: null
+      }
     };
   }
 
-  private dispatchTask(input: { taskId: string; sessionId: string; prompt: string; actorId: string }) {
+  private dispatchTask(input: {
+    taskId: string;
+    sessionId: string;
+    prompt: string;
+    actorId: string;
+    threadRef?: string | null;
+    projectPath?: string | null;
+    modelSlug?: string | null;
+    modelReasoningLevel?: string | null;
+  }) {
     if (!this.deps.codexDispatchService) {
       return {
         accepted: false,
@@ -296,6 +395,16 @@ export class LightOpsService {
     }
 
     return this.deps.codexDispatchService.dispatchTask(input);
+  }
+
+  private resolveDispatchContext(taskId: string) {
+    const context = this.deps.taskDispatchContextRepository.findByTaskId(taskId);
+    return {
+      threadRef: context?.threadRef ?? null,
+      projectPath: context?.projectPath ?? null,
+      modelSlug: context?.modelSlug ?? null,
+      modelReasoningLevel: context?.modelReasoningLevel ?? null
+    };
   }
 
   private syncSessionStatus(sessionId: string, now: string, fallbackStatus: string) {

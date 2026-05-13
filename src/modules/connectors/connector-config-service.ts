@@ -6,6 +6,10 @@ import {
 } from "../../storage/repositories/connector-config-repository";
 
 export type ConnectorConfigInput = Omit<ConnectorConfigRecord, "lastTestAt" | "lastTestResult" | "updatedAt">;
+export type ConnectorConfigAdminView = Omit<ConnectorConfigRecord, "appSecret"> & {
+  appSecretMasked: string;
+  appSecretConfigured: boolean;
+};
 
 export class ConnectorConfigService {
   constructor(private readonly repository: ConnectorConfigRepository) {}
@@ -49,15 +53,21 @@ export class ConnectorConfigService {
     return this.repository.listAll();
   }
 
+  getAdminConfig(platform: ConnectorPlatform): ConnectorConfigAdminView {
+    return this.toAdminView(this.getConfig(platform));
+  }
+
   updateConfig(platform: ConnectorPlatform, input: ConnectorConfigInput) {
     if (platform !== input.platform) {
       throw new AppError("PLATFORM_MISMATCH", 400, "Platform in path and payload must match");
     }
 
     const existing = this.getConfig(platform);
+    const nextSecret = input.appSecret.trim() ? input.appSecret : existing.appSecret;
     return this.repository.upsert({
       ...existing,
       ...input,
+      appSecret: nextSecret,
       updatedAt: new Date().toISOString()
     })!;
   }
@@ -112,4 +122,24 @@ export class ConnectorConfigService {
       message: "Connection test passed (QQ webhook mode)"
     };
   }
+
+  private toAdminView(config: ConnectorConfigRecord): ConnectorConfigAdminView {
+    const { appSecret: _appSecret, ...rest } = config;
+    return {
+      ...rest,
+      appSecretMasked: maskSecret(config.appSecret),
+      appSecretConfigured: Boolean(config.appSecret.trim())
+    };
+  }
+}
+
+function maskSecret(secret: string) {
+  const normalized = String(secret || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= 6) {
+    return `${normalized[0] || "*"}***${normalized.at(-1) || "*"}`;
+  }
+  return `${normalized.slice(0, 3)}***${normalized.slice(-2)}`;
 }

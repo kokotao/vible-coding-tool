@@ -11,6 +11,7 @@ const envSchema = z.object({
     .transform((value) => (value ? value === "true" : process.env.NODE_ENV !== "test")),
   LOG_RETENTION_DAYS: z.coerce.number().int().positive().min(1).max(365).default(7),
   DATABASE_PATH: z.string().min(1).default("./data/gateway.db"),
+  WEB_ADMIN_TOKEN: z.string().optional(),
   CODEX_INGRESS_TOKEN: z.string().optional(),
   CODEX_INGRESS_SIGNING_SECRET: z.string().optional(),
   CODEX_INGRESS_MAX_SKEW_SECONDS: z.coerce.number().int().positive().max(3600).default(300),
@@ -50,6 +51,7 @@ export type AppEnv = {
   autoOpenBrowser: boolean;
   logRetentionDays: number;
   databasePath: string;
+  webAdminToken: string | undefined;
   codexIngressToken: string | undefined;
   codexIngressSigningSecret: string | undefined;
   codexIngressMaxSkewSeconds: number;
@@ -77,6 +79,7 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     autoOpenBrowser: parsed.AUTO_OPEN_BROWSER,
     logRetentionDays: parsed.LOG_RETENTION_DAYS,
     databasePath: parsed.DATABASE_PATH,
+    webAdminToken: parsed.WEB_ADMIN_TOKEN,
     codexIngressToken: parsed.CODEX_INGRESS_TOKEN,
     codexIngressSigningSecret: parsed.CODEX_INGRESS_SIGNING_SECRET,
     codexIngressMaxSkewSeconds: parsed.CODEX_INGRESS_MAX_SKEW_SECONDS,

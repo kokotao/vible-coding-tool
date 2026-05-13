@@ -11,6 +11,8 @@ import { type CodexIngressSecurityOptions, verifyCodexIngress } from "../modules
 import { CodexEventService } from "../modules/codex/codex-event-service";
 import { getCodexGlobalWatcherRuntimeStatus } from "../modules/codex/codex-global-watcher";
 import { CodexQueryService } from "../modules/codex/codex-query-service";
+import { CodexWebChatService } from "../modules/codex/codex-web-chat-service";
+import { type AdminAccessOptions, verifyAdminAccess } from "../modules/security/admin-auth";
 import { IdempotencyRepository } from "../storage/repositories/idempotency-repository";
 
 const codexEventSchema = z.object({
@@ -103,6 +105,12 @@ const codexLocalSessionDetailQuerySchema = z.object({
     .transform((value) => (value ? value === "true" : false))
 });
 
+const codexLocalSessionSendSchema = z.object({
+  prompt: z.string().trim().min(1).max(20_000),
+  actorId: z.string().trim().min(1).max(128).optional(),
+  sourcePlatform: z.string().trim().min(1).max(64).optional()
+});
+
 function parseStatuses(value: string | undefined) {
   if (!value) {
     return [];
@@ -118,8 +126,10 @@ export function registerCodexRoutes(
   app: FastifyInstance,
   codexEventService: CodexEventService,
   codexQueryService: CodexQueryService,
+  codexWebChatService: CodexWebChatService,
   idempotencyRepository: IdempotencyRepository,
-  ingressSecurityOptions: CodexIngressSecurityOptions
+  ingressSecurityOptions: CodexIngressSecurityOptions,
+  adminAccessOptions: AdminAccessOptions
 ) {
   app.post<{ Body: unknown }>("/api/codex/events", async (request) => {
     verifyCodexIngress({
@@ -261,6 +271,7 @@ export function registerCodexRoutes(
   );
 
   app.get<{ Querystring: { limit?: string; refresh?: string } }>("/api/codex/local-sessions", async (request) => {
+    verifyAdminAccess(request, adminAccessOptions);
     const query = codexLocalSessionsQuerySchema.parse(request.query);
     return codexQueryService.listLocalSessions({
       limit: query.limit ?? 1000,
@@ -271,6 +282,7 @@ export function registerCodexRoutes(
   app.get<{ Params: { threadId: string }; Querystring: { refresh?: string } }>(
     "/api/codex/local-sessions/:threadId",
     async (request) => {
+      verifyAdminAccess(request, adminAccessOptions);
       const query = codexLocalSessionDetailQuerySchema.parse(request.query);
       return codexQueryService.getLocalSessionDetail({
         threadId: request.params.threadId,
@@ -278,4 +290,15 @@ export function registerCodexRoutes(
       });
     }
   );
+
+  app.post<{ Params: { threadId: string }; Body: unknown }>("/api/codex/local-sessions/:threadId/send", async (request) => {
+    verifyAdminAccess(request, adminAccessOptions);
+    const payload = codexLocalSessionSendSchema.parse(request.body || {});
+    return codexWebChatService.sendToLocalSession({
+      threadId: request.params.threadId,
+      prompt: payload.prompt,
+      actorId: payload.actorId,
+      sourcePlatform: payload.sourcePlatform
+    });
+  });
 }

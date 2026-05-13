@@ -30,6 +30,7 @@ export function migrateDatabase(db: SqliteDatabase) {
   ensureAuditLogTaskIdColumn(db);
   ensureFeishuPanelContextColumns(db);
   ensureFeishuSessionRoutesTable(db);
+  ensureTaskDispatchContextsTable(db);
   ensureAuditLogIndexes(db);
 }
 
@@ -70,6 +71,26 @@ function ensureFeishuSessionRoutesTable(db: SqliteDatabase) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
+  `);
+}
+
+function ensureTaskDispatchContextsTable(db: SqliteDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_dispatch_contexts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL UNIQUE,
+      session_id TEXT NOT NULL,
+      thread_ref TEXT,
+      project_path TEXT,
+      model_slug TEXT,
+      model_reasoning_level TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_task_dispatch_contexts_session_updated_id
+      ON task_dispatch_contexts(session_id, updated_at DESC, id DESC)
   `);
 }
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AppError } from "../../lib/errors";
-import { evaluateRisk } from "../risk/risk-guard";
+import { CommandIntakeService } from "../commands/command-intake-service";
 import { ConnectorConfigService } from "../connectors/connector-config-service";
 import { CodexDispatchService } from "../codex/codex-dispatch-service";
 import { CodexLocalSessionService } from "../codex/codex-local-session-service";
@@ -28,6 +28,7 @@ type QqWebhookServiceDeps = {
   connectorConfigService: ConnectorConfigService;
   idempotencyRepository: IdempotencyRepository;
   feishuSessionRouteRepository: FeishuSessionRouteRepository;
+  commandIntakeService: CommandIntakeService;
   codexDispatchService?: CodexDispatchService;
   codexLocalSessionService?: CodexLocalSessionService;
   qqNotifier?: QqOutboundNotifier;
@@ -227,21 +228,17 @@ export class QqWebhookService {
       };
     }
 
-    const risk = evaluateRisk(parsed.prompt, connectorConfig.riskKeywords);
-    const taskId = randomUUID();
-    const eventId = randomUUID();
-    const existingSession = this.deps.toolSessionRepository.findBySessionId(sessionId);
-    const toolSessionRef = threadRef || existingSession?.toolSessionRef || "";
-    const taskStatus = risk.level === "high" ? "pending_confirm" : "running";
-
-    this.deps.toolSessionRepository.upsert({
+    const intake = this.deps.commandIntakeService.acceptCommand({
       sessionId,
-      toolProvider: "codex",
-      toolSessionRef,
-      status: risk.level === "high" ? "waiting_confirm" : "running",
-      createdBy: parsed.senderId,
-      createdAt: now,
-      updatedAt: now
+      actorId: parsed.senderId,
+      sourcePlatform: "qq",
+      prompt: parsed.prompt,
+      taskType: "command",
+      threadRef,
+      platformMessageId: parsed.platformMessageId,
+      riskKeywords: connectorConfig.riskKeywords,
+      confirmTimeoutSeconds: connectorConfig.confirmTimeoutSeconds,
+      createdBy: parsed.senderId
     });
     this.upsertSessionRoute({
       sessionId,
@@ -251,46 +248,8 @@ export class QqWebhookService {
       platformMessageId: parsed.platformMessageId,
       now
     });
-
-    this.deps.taskRepository.create({
-      taskId,
-      sessionId,
-      triggerMessageId: eventId,
-      taskType: "command",
-      status: taskStatus,
-      summary: parsed.prompt,
-      startedAt: now,
-      finishedAt: null
-    });
-
-    this.deps.messageRepository.create({
-      eventId,
-      sessionId,
-      direction: "bot_to_tool",
-      sourcePlatform: "qq",
-      platformMessageId: parsed.platformMessageId,
-      senderId: parsed.senderId,
-      content: parsed.prompt,
-      messageType: "command",
-      riskLevel: risk.level,
-      status: taskStatus,
-      taskId,
-      createdAt: now
-    });
-
-    if (risk.level === "high") {
-      const expiredAt = new Date(Date.now() + connectorConfig.confirmTimeoutSeconds * 1000).toISOString();
-      this.deps.riskConfirmationRepository.create({
-        taskId,
-        sessionId,
-        requestedBy: parsed.senderId,
-        confirmationToken: randomUUID(),
-        status: "pending",
-        expiredAt,
-        confirmedBy: null,
-        confirmedAt: null
-      });
-    }
+    const taskId = intake.taskId;
+    const taskStatus = intake.taskStatus;
 
     const notify = await this.notifyTaskStatus({
       taskId,
@@ -316,33 +275,16 @@ export class QqWebhookService {
       createdAt: now
     });
 
-    const dispatch =
-      risk.level === "high"
-        ? {
-            accepted: false,
-            skipped: true,
-            reason: "pending_confirmation",
-            pid: null,
-            threadRef
-          }
-        : this.dispatchTask({
-            taskId,
-            sessionId,
-            prompt: parsed.prompt,
-            actorId: parsed.senderId,
-            threadRef
-          });
-
     return {
       accepted: true,
       sessionId,
       taskId,
-      riskLevel: risk.level,
-      pendingConfirmation: risk.level === "high",
-      message: risk.level === "high" ? "High risk command pending confirmation" : "Command accepted",
+      riskLevel: intake.riskLevel,
+      pendingConfirmation: intake.pendingConfirmation,
+      message: intake.pendingConfirmation ? "High risk command pending confirmation" : "Command accepted",
       threadRef,
       notify,
-      dispatch
+      dispatch: this.toDispatchSummary(intake.dispatch)
     };
   }
 
@@ -560,30 +502,13 @@ export class QqWebhookService {
     };
   }
 
-  private dispatchTask(input: {
-    taskId: string;
-    sessionId: string;
-    prompt: string;
-    actorId: string;
-    threadRef?: string | null;
+  private toDispatchSummary(result: {
+    accepted: boolean;
+    skipped: boolean;
+    reason: string | null;
+    pid: number | null;
+    threadRef: string | null;
   }) {
-    if (!this.deps.codexDispatchService) {
-      return {
-        accepted: false,
-        skipped: true,
-        reason: "dispatcher_disabled",
-        pid: null,
-        threadRef: input.threadRef ?? null
-      };
-    }
-
-    const result = this.deps.codexDispatchService.dispatchTask({
-      taskId: input.taskId,
-      sessionId: input.sessionId,
-      prompt: input.prompt,
-      actorId: input.actorId,
-      threadRef: input.threadRef ?? null
-    });
     return {
       accepted: result.accepted,
       skipped: result.skipped,

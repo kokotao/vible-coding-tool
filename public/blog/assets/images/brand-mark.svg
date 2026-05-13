@@ -1,0 +1,23 @@
+<svg width="120" height="80" viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g1" x1="24" y1="8" x2="50" y2="70" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2DF1FF"/>
+      <stop offset="1" stop-color="#2873FF"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="96" y1="8" x2="70" y2="70" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#68F7FF"/>
+      <stop offset="1" stop-color="#7E4EFF"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2.4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <path d="M25 10L18 34C16 41 17 49 22 55L27 61L35 48L31 32L25 10Z" fill="url(#g1)" filter="url(#glow)"/>
+  <path d="M95 10L102 34C104 41 103 49 98 55L93 61L85 48L89 32L95 10Z" fill="url(#g2)" filter="url(#glow)"/>
+  <path d="M50 13L41 38L50 48L45 64L60 56L75 64L70 48L79 38L70 13L60 24L50 13Z" fill="url(#g1)" filter="url(#glow)"/>
+  <path d="M60 22L50 35L60 46L70 35L60 22Z" fill="#EFFFFF" fill-opacity="0.88"/>
+</svg>

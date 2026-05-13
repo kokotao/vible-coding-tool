@@ -2242,6 +2242,19 @@ select {
   word-break: break-word;
 }
 
+.lsw-chat-bubble.is-pending {
+  box-shadow: 0 0 0 1px rgba(91, 133, 214, 0.12);
+}
+
+.lsw-chat-pending {
+  font-style: normal;
+  font-size: 12px;
+  color: #6e87bc;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef4ff;
+}
+
 .lsw-tool-fold {
   border: 1px solid #e5e1da;
   border-radius: 10px;
@@ -2323,7 +2336,7 @@ select {
   border-radius: 10px;
   padding: 0 12px;
   background: #faf8f5;
-  color: #938d86;
+  color: #3f3934;
 }
 
 .lsw-chat-input button {

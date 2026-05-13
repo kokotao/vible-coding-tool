@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import { z } from "zod";
 import { CodexCliRuntimeService } from "../modules/codex/codex-cli-runtime-service";
 import { AppError } from "../lib/errors";
+import { type AdminAccessOptions, verifyAdminAccess } from "../modules/security/admin-auth";
 
 const codexRuntimeConfigSchema = z.object({
   apiBaseUrl: z.string().trim().max(1024).nullable().optional(),
@@ -24,7 +25,11 @@ const pickWorkspaceRootSchema = z.object({
   startPath: z.string().trim().max(4096).optional()
 });
 
-export function registerSystemRoutes(app: FastifyInstance, codexCliRuntimeService: CodexCliRuntimeService) {
+export function registerSystemRoutes(
+  app: FastifyInstance,
+  codexCliRuntimeService: CodexCliRuntimeService,
+  adminAccessOptions: AdminAccessOptions
+) {
   app.get("/api/system/codex-cli/status", async () => {
     return codexCliRuntimeService.getStatus({
       refresh: true
@@ -32,6 +37,7 @@ export function registerSystemRoutes(app: FastifyInstance, codexCliRuntimeServic
   });
 
   app.put<{ Body: unknown }>("/api/system/codex-cli/config", async (request) => {
+    verifyAdminAccess(request, adminAccessOptions);
     const payload = codexRuntimeConfigSchema.parse(request.body);
     return codexCliRuntimeService.saveApiConfig({
       apiBaseUrl: payload.apiBaseUrl ?? undefined,
@@ -41,6 +47,7 @@ export function registerSystemRoutes(app: FastifyInstance, codexCliRuntimeServic
   });
 
   app.post<{ Body: unknown }>("/api/system/codex-cli/install", async (request, reply) => {
+    verifyAdminAccess(request, adminAccessOptions);
     const payload = codexInstallSchema.parse(request.body || {});
     if (!payload.confirm) {
       reply.status(400);
@@ -66,7 +73,8 @@ export function registerSystemRoutes(app: FastifyInstance, codexCliRuntimeServic
     };
   });
 
-  app.post("/api/system/codex-cli/authorize-project", async () => {
+  app.post("/api/system/codex-cli/authorize-project", async (request) => {
+    verifyAdminAccess(request, adminAccessOptions);
     const updated = codexCliRuntimeService.authorizeProjectTrust();
     return {
       updated,
@@ -77,6 +85,7 @@ export function registerSystemRoutes(app: FastifyInstance, codexCliRuntimeServic
   });
 
   app.post<{ Body: unknown }>("/api/system/workspace-root/pick", async (request) => {
+    verifyAdminAccess(request, adminAccessOptions);
     const payload = pickWorkspaceRootSchema.parse(request.body || {});
     const pickedPath = await pickDirectoryPath(payload.startPath);
     if (!pickedPath) {
